@@ -12,8 +12,9 @@ use tokio::sync::{mpsc::channel, RwLock as AsyncRwLock};
 use url::Url;
 
 use super::{
-    cache::restore_sliding_sync_state, sticky_parameters::StickyManager, SlidingSync,
-    SlidingSyncInner, SlidingSyncListBuilder, SlidingSyncPositionMarkers, SlidingSyncRoom,
+    cache::restore_sliding_sync_state, sticky_parameters::StickyManager, to_device::ToDeviceLoop,
+    SlidingSync, SlidingSyncInner, SlidingSyncListBuilder, SlidingSyncPositionMarkers,
+    SlidingSyncRoom,
 };
 use crate::{sliding_sync::StickyParameters, Client, Result};
 
@@ -224,7 +225,6 @@ impl SlidingSyncBuilder {
         let client = self.client;
 
         let mut delta_token = None;
-        let mut to_device_token = None;
 
         let (internal_channel_sender, internal_channel_receiver) = channel(8);
 
@@ -238,18 +238,18 @@ impl SlidingSyncBuilder {
 
         // Load an existing state from the cache.
         if let Some(storage_key) = &self.storage_key {
-            restore_sliding_sync_state(
-                &client,
-                storage_key,
-                &lists,
-                &mut delta_token,
-                &mut to_device_token,
-            )
-            .await?;
+            restore_sliding_sync_state(&client, storage_key, &lists, &mut delta_token).await?;
         }
 
         let rooms = StdRwLock::new(self.rooms);
         let lists = StdRwLock::new(lists);
+
+        let to_device_sync_loop = ToDeviceLoop::new(
+            "main_app".to_owned(),
+            client.clone(),
+            self.storage_key.clone(),
+            self.homeserver.clone(),
+        );
 
         // Always enable to-device events and the e2ee-extension on the initial request,
         // no matter what the caller wants.
@@ -267,11 +267,7 @@ impl SlidingSyncBuilder {
 
             reset_counter: Default::default(),
 
-            position: StdRwLock::new(SlidingSyncPositionMarkers {
-                pos: None,
-                delta_token,
-                to_device_token,
-            }),
+            position: StdRwLock::new(SlidingSyncPositionMarkers { pos: None, delta_token }),
 
             sticky: StdRwLock::new(StickyManager::new(StickyParameters::new(
                 self.bump_event_types,
@@ -284,6 +280,8 @@ impl SlidingSyncBuilder {
                 internal_channel_sender,
                 AsyncRwLock::new(internal_channel_receiver),
             ),
+
+            to_device_sync_loop,
         }))
     }
 }

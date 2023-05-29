@@ -6,16 +6,30 @@ use std::{
     time::Duration,
 };
 use tokio::{spawn, sync::Mutex as AsyncMutex};
-use tracing::{debug, error, instrument, trace, Instrument as _, Span};
+use tracing::{debug, error, instrument, trace, warn, Instrument as _, Span};
 use url::Url;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ToDeviceLoop {
+    /// The HTTP Matrix client.
     client: Client,
-    since_token: Arc<RwLock<Option<String>>>,
-    /// Customize the homeserver for sliding sync only
+
+    /// Unique identifier of the role of this to-device loop.
+    ///
+    /// Must be less than 16 chars.
+    connection_id: String,
+
+    /// Customize the homeserver for sliding sync only.
     homeserver: Option<Url>,
+
+    /// The to-devince "since" token, read from the previous `next_batch` response.
+    ///
+    /// Cached to / reloaded from the disk; may be none for the first request.
+    since_token: Arc<RwLock<Option<String>>>,
+
+    /// A lock to serialize processing of responses.
     response_handling_lock: Arc<AsyncMutex<()>>,
+
     storage_key: Option<String>,
 }
 
@@ -30,9 +44,41 @@ impl From<&ToDeviceLoop> for FrozenToDeviceLoop {
     }
 }
 
+struct FakeLock;
+
 impl ToDeviceLoop {
+    pub(super) fn new(
+        connection_id: String,
+        client: Client,
+        storage_key: Option<String>,
+        homeserver: Option<Url>,
+    ) -> Self {
+        // No need to reload the previous since_token from the cache; it's going to be done when reloading from the disk cache.
+        Self {
+            client,
+            connection_id,
+            homeserver,
+            since_token: Default::default(),
+            response_handling_lock: Default::default(),
+            storage_key,
+        }
+    }
+
+    async fn acquire_lock(&self) -> Result<FakeLock, crate::Error> {
+        // TODO wait for lock shared with other process.
+        let lock = FakeLock;
+
+        // Reload data from cache, reinitialize internal caches, etc.
+        // TODO reinitialize internal caches
+        self.restore_from_cache().await?;
+
+        Ok(lock)
+    }
+
     #[instrument(skip_all, fields(since))]
-    async fn sync_once(&self) -> Result<(), crate::Error> {
+    pub async fn sync_once(&self) -> Result<(), crate::Error> {
+        let _lock = self.acquire_lock().await?;
+
         let (request, request_config) = {
             let since = self.since_token.read().unwrap().clone();
             Span::current().record("since", &since);
@@ -149,6 +195,10 @@ impl ToDeviceLoop {
         Ok(())
     }
 
+    fn full_storage_key(&self, storage_key: &str) -> String {
+        format!("{storage_key}-{}-to-device-loop", self.connection_id)
+    }
+
     async fn cache_to_storage(&self) -> Result<(), crate::Error> {
         let Some(storage_key) = self.storage_key.as_ref() else { return Ok(()) };
 
@@ -159,10 +209,84 @@ impl ToDeviceLoop {
         // the store.
         storage
             .set_custom_value(
-                format!("{storage_key}-to-device-loop").as_bytes(),
+                self.full_storage_key(&storage_key).as_bytes(),
                 serde_json::to_vec(&FrozenToDeviceLoop::from(self))?,
             )
             .await?;
+
+        Ok(())
+    }
+
+    async fn restore_from_cache(&self) -> Result<(), crate::Error> {
+        let Some(storage_key) = self.storage_key.as_ref() else { return Ok(()) };
+
+        trace!(storage_key, "Restoring a ToDeviceSyncLoop");
+        let storage = self.client.store();
+        let key = self.full_storage_key(&storage_key);
+
+        match storage
+            .get_custom_value(key.as_bytes())
+            .await?
+            .map(|bytes| serde_json::from_slice::<FrozenToDeviceLoop>(&bytes))
+        {
+            Some(Ok(frozen)) => {
+                // Only rewrite the token if it was set, as it should never transition from set -> non-set.
+                if let Some(since_token) = frozen.since_token {
+                    *self.since_token.write().unwrap() = Some(since_token);
+                }
+            }
+
+            Some(Err(err)) => {
+                warn!("to-device token in cache was corrupted, invalidating cache entry: {err:#}");
+                let _ = storage.remove_custom_value(key.as_bytes());
+            }
+
+            None => {
+                trace!("no to-device since token in the cache");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::MockServer;
+
+    use crate::test_utils::logged_in_client;
+
+    use super::*;
+
+    async fn new_to_device_loop() -> Result<(MockServer, ToDeviceLoop), crate::Error> {
+        let server = MockServer::start().await;
+        let client = logged_in_client(Some(server.uri())).await;
+
+        let to_device_loop = ToDeviceLoop::new(
+            "connection_id".to_owned(),
+            client,
+            Some("storage_key".to_owned()),
+            Some(Url::parse("https://slidingsync.example.org")?),
+        );
+
+        Ok((server, to_device_loop))
+    }
+
+    #[tokio::test]
+    async fn test_to_device_token_properly_cached() -> Result<(), crate::Error> {
+        let (_server, to_device_loop) = new_to_device_loop().await?;
+
+        // When no to-device token is present, it's still not there after caching
+        // either.
+        let frozen = FrozenToDeviceLoop::from(&to_device_loop);
+        assert!(frozen.since_token.is_none());
+
+        // When a to-device token is present, it's properly reloaded.
+        let since = String::from("my-to-device-since-token");
+        *to_device_loop.since_token.write().unwrap() = Some(since.clone());
+
+        let frozen = FrozenToDeviceLoop::from(&to_device_loop);
+        assert_eq!(frozen.since_token, Some(since));
 
         Ok(())
     }

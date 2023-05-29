@@ -151,7 +151,6 @@ pub(super) async fn restore_sliding_sync_state(
     storage_key: &str,
     lists: &BTreeMap<String, SlidingSyncList>,
     delta_token: &mut Option<String>,
-    to_device_token: &mut Option<String>,
 ) -> Result<()> {
     let storage = client.store();
 
@@ -162,12 +161,9 @@ pub(super) async fn restore_sliding_sync_state(
         .map(|custom_value| serde_json::from_slice::<FrozenSlidingSync>(&custom_value))
     {
         // `SlidingSync` has been found and successfully deserialized.
-        Some(Ok(FrozenSlidingSync { to_device_since, delta_token: frozen_delta_token })) => {
+        Some(Ok(FrozenSlidingSync { delta_token: frozen_delta_token })) => {
             trace!("Successfully read the `SlidingSync` from the cache");
             // Let's update the `SlidingSync`.
-            if let Some(since) = to_device_since {
-                *to_device_token = Some(since);
-            }
             *delta_token = frozen_delta_token;
         }
 

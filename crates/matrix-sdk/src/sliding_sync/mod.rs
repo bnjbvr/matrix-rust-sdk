@@ -51,6 +51,7 @@ use ruma::{
     OwnedRoomId, RoomId, TransactionId,
 };
 use serde::{Deserialize, Serialize};
+use to_device::ToDeviceLoop;
 use tokio::{
     select, spawn,
     sync::{
@@ -156,6 +157,9 @@ pub(super) struct SlidingSyncInner {
     /// types.
     internal_channel:
         (Sender<SlidingSyncInternalMessage>, AsyncRwLock<Receiver<SlidingSyncInternalMessage>>),
+
+    /// Another sync loop running concurrently that fetches to-device events if needs be.
+    to_device_sync_loop: ToDeviceLoop,
 }
 
 impl SlidingSync {
@@ -317,9 +321,6 @@ impl SlidingSync {
             let mut position_lock = self.inner.position.write().unwrap();
             position_lock.pos = Some(sliding_sync_response.pos);
             position_lock.delta_token = sliding_sync_response.delta_token;
-            if let Some(to_device) = sliding_sync_response.extensions.to_device {
-                position_lock.to_device_token = Some(to_device.next_batch);
-            }
         }
 
         // Commit sticky parameters, if needed.
@@ -447,14 +448,7 @@ impl SlidingSync {
 
         {
             let mut sticky_params = self.inner.sticky.write().unwrap();
-
             sticky_params.maybe_apply(&mut request, &txn_id);
-
-            // Set the to_device token if the extension is enabled.
-            if sticky_params.data().extensions.to_device.enabled == Some(true) {
-                request.extensions.to_device.since =
-                    self.inner.position.read().unwrap().to_device_token.clone();
-            }
         }
 
         Ok(Some((
@@ -465,6 +459,10 @@ impl SlidingSync {
             RequestConfig::default().timeout(timeout + Duration::from_secs(30)),
             room_unsubscriptions,
         )))
+    }
+
+    async fn sync_to_device_once(&self) -> Result<()> {
+        self.inner.to_device_sync_loop.sync_once().await
     }
 
     #[instrument(skip_all, fields(pos))]
@@ -602,6 +600,15 @@ impl SlidingSync {
                         }
                     }
 
+                    to_device_result = self.sync_to_device_once().instrument(sync_span.clone()) => {
+                        if let Err(err) = to_device_result {
+                            // Propagate errors to the stream's callers, as there's no position tracking here.
+                            yield Err(err);
+
+                            break;
+                        }
+                    }
+
                     update_summary = self.sync_once().instrument(sync_span.clone()) => {
                         match update_summary {
                             Ok(Some(updates)) => {
@@ -726,14 +733,10 @@ pub(super) struct SlidingSyncPositionMarkers {
     /// If `None`, the server will send the
     /// full information for all the lists present in the request.
     delta_token: Option<String>,
-
-    to_device_token: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct FrozenSlidingSync {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    to_device_since: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     delta_token: Option<String>,
 }
@@ -742,10 +745,7 @@ impl From<&SlidingSync> for FrozenSlidingSync {
     fn from(sliding_sync: &SlidingSync) -> Self {
         let position = sliding_sync.inner.position.read().unwrap();
 
-        FrozenSlidingSync {
-            delta_token: position.delta_token.clone(),
-            to_device_since: position.to_device_token.clone(),
-        }
+        FrozenSlidingSync { delta_token: position.delta_token.clone() }
     }
 }
 
@@ -830,28 +830,6 @@ mod tests {
 
         // this test also ensures that Tokio is not panicking when calling
         // `subscribe_to_room` and `unsubscribe_from_room`.
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_to_device_token_properly_cached() -> Result<()> {
-        let (_server, sliding_sync) = new_sliding_sync(vec![SlidingSyncList::builder("foo")
-            .sync_mode(SlidingSyncMode::new_selective().add_range(0..=10))])
-        .await?;
-
-        // When no to-device token is present, it's still not there after caching
-        // either.
-        let frozen = FrozenSlidingSync::from(&sliding_sync);
-        assert!(frozen.to_device_since.is_none());
-
-        // When a to-device token is present, `prepare_extensions_config` fills the
-        // request with it.
-        let since = String::from("my-to-device-since-token");
-        sliding_sync.inner.position.write().unwrap().to_device_token = Some(since.clone());
-
-        let frozen = FrozenSlidingSync::from(&sliding_sync);
-        assert_eq!(frozen.to_device_since, Some(since));
 
         Ok(())
     }
@@ -1059,7 +1037,8 @@ mod tests {
         // into the extension config. The rest doesn't need to be re-enabled due to
         // stickyness.
         let since_token = "since";
-        sync.inner.position.write().unwrap().to_device_token = Some(since_token.to_owned());
+        // TODO
+        // sync.inner.position.write().unwrap().to_device_token = Some(since_token.to_owned());
 
         let (request, _, _) = sync
             .generate_sync_request()?
