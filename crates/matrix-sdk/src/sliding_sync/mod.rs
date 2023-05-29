@@ -22,6 +22,7 @@ mod error;
 mod list;
 mod room;
 mod sticky_parameters;
+mod to_device;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -490,7 +491,7 @@ impl SlidingSync {
         // coming from the `OlmMachine::outgoing_requests()` method.
         #[cfg(feature = "e2e-encryption")]
         let response = {
-            debug!("Sliding Sync is sending the request along with  outgoing E2EE requests");
+            debug!("Sliding Sync is sending the request along with outgoing E2EE requests");
 
             let (e2ee_uploads, response) =
                 futures_util::future::join(self.inner.client.send_outgoing_requests(), request)
