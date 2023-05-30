@@ -94,8 +94,8 @@ impl ToDeviceLoop {
 
             (
                 // Build the request itself.
-                // TODO add the conn_id here
                 assign!(v4::Request::new(), {
+                    conn_id: Some(self.connection_id.clone()),
                     timeout: Some(timeout),
                     extensions,
                 }),
