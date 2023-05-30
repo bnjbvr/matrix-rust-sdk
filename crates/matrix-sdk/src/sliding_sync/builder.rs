@@ -251,7 +251,8 @@ impl SlidingSyncBuilder {
             self.homeserver.clone(),
         );
 
-        // Always disable to-device events and the e2ee-extension for the main sync, as the to-device sync loop will take care of it.
+        // Always disable to-device events and the e2ee-extension for the main sync, as
+        // the to-device sync loop will take care of it.
         let mut extensions = self.extensions.unwrap_or_default();
         extensions.to_device.enabled = None;
         extensions.e2ee.enabled = None;

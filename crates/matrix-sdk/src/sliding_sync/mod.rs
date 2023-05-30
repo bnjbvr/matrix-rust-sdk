@@ -158,7 +158,8 @@ pub(super) struct SlidingSyncInner {
     internal_channel:
         (Sender<SlidingSyncInternalMessage>, AsyncRwLock<Receiver<SlidingSyncInternalMessage>>),
 
-    /// Another sync loop running concurrently that fetches to-device events if needs be.
+    /// Another sync loop running concurrently that fetches to-device events if
+    /// needs be.
     to_device_sync_loop: ToDeviceLoop,
 }
 
@@ -1047,7 +1048,8 @@ mod tests {
         // stickyness.
         let since_token = "since";
         // TODO
-        // sync.inner.position.write().unwrap().to_device_token = Some(since_token.to_owned());
+        // sync.inner.position.write().unwrap().to_device_token =
+        // Some(since_token.to_owned());
 
         let (request, _, _) = sync
             .generate_sync_request()?

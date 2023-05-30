@@ -1,15 +1,16 @@
-use crate::{sliding_sync::RequestConfig, Client};
-use ruma::{api::client::sync::sync_events::v4, assign, TransactionId};
-use serde::{Deserialize, Serialize};
 use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+
+use ruma::{api::client::sync::sync_events::v4, assign, TransactionId};
+use serde::{Deserialize, Serialize};
 use tokio::{spawn, sync::Mutex as AsyncMutex};
 use tracing::{debug, error, instrument, trace, warn, Instrument as _, Span};
 use url::Url;
 
 use super::sticky_parameters::{StickyData, StickyManager};
+use crate::{sliding_sync::RequestConfig, Client};
 
 #[derive(Clone, Debug)]
 struct StickyParameters;
@@ -36,7 +37,8 @@ pub struct ToDeviceLoop {
     /// Customize the homeserver for sliding sync only.
     homeserver: Option<Url>,
 
-    /// The to-devince "since" token, read from the previous `next_batch` response.
+    /// The to-devince "since" token, read from the previous `next_batch`
+    /// response.
     ///
     /// Cached to / reloaded from the disk; may be none for the first request.
     since_token: Arc<RwLock<Option<String>>>,
@@ -73,7 +75,8 @@ impl ToDeviceLoop {
         storage_key: Option<String>,
         homeserver: Option<Url>,
     ) -> Self {
-        // No need to reload the previous since_token from the cache; it's going to be done when reloading from the disk cache.
+        // No need to reload the previous since_token from the cache; it's going to be
+        // done when reloading from the disk cache.
         Self {
             client,
             connection_id,
@@ -91,6 +94,16 @@ impl ToDeviceLoop {
         let lock = FakeLock;
 
         // Reload data from cache, reinitialize internal caches, etc.
+        // We always do this because another process (namely the notification process,
+        // on phones) may have written to the database, in which case we'd need to read
+        // back from it.
+        //
+        // TODO maybe we can avoid restoring from the cache all
+        // the time, by maintaining some custom generational index, that's incremented
+        // every time there's a change to the database. The process would then be: 1.
+        // take the lock, 2. write things, 3. increment generational index (overflow is
+        // fine), 4. release the lock.
+        //
         // TODO reinitialize internal caches
         self.restore_from_cache().await?;
 
@@ -193,6 +206,8 @@ impl ToDeviceLoop {
 
             this.cache_to_storage().await?;
 
+            drop(_lock);
+
             debug!("To-device sliding sync response has been fully handled");
             Ok(())
         };
@@ -263,7 +278,8 @@ impl ToDeviceLoop {
             .map(|bytes| serde_json::from_slice::<FrozenToDeviceLoop>(&bytes))
         {
             Some(Ok(frozen)) => {
-                // Only rewrite the token if it was set, as it should never transition from set -> non-set.
+                // Only rewrite the token if it was set, as it should never transition from set
+                // -> non-set.
                 if let Some(since_token) = frozen.since_token {
                     *self.since_token.write().unwrap() = Some(since_token);
                 }
@@ -282,7 +298,8 @@ impl ToDeviceLoop {
         Ok(())
     }
 
-    /// Invalidates the current session, after the server has told us it doesn't know about some `pos` marker value.
+    /// Invalidates the current session, after the server has told us it doesn't
+    /// know about some `pos` marker value.
     pub fn invalidate_session(&self) {
         // Reset the `pos` marker.
         *self.pos.write().unwrap() = None;
@@ -295,9 +312,8 @@ impl ToDeviceLoop {
 mod tests {
     use wiremock::MockServer;
 
-    use crate::test_utils::logged_in_client;
-
     use super::*;
+    use crate::test_utils::logged_in_client;
 
     async fn new_to_device_loop() -> Result<(MockServer, ToDeviceLoop), crate::Error> {
         let server = MockServer::start().await;
