@@ -612,10 +612,7 @@ impl SlidingSync {
                                 self.invalidate_to_device();
                             }
 
-                            // Propagate errors to the stream's callers, as there's no position tracking here.
                             yield Err(err);
-
-                            break;
                         }
                     }
 
