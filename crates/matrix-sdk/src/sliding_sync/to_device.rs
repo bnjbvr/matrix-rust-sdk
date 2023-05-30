@@ -1,5 +1,5 @@
 use crate::{sliding_sync::RequestConfig, Client};
-use ruma::{api::client::sync::sync_events::v4, assign};
+use ruma::{api::client::sync::sync_events::v4, assign, TransactionId};
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{Arc, RwLock},
@@ -8,6 +8,20 @@ use std::{
 use tokio::{spawn, sync::Mutex as AsyncMutex};
 use tracing::{debug, error, instrument, trace, warn, Instrument as _, Span};
 use url::Url;
+
+use super::sticky_parameters::{StickyData, StickyManager};
+
+#[derive(Clone, Debug)]
+struct StickyParameters;
+
+impl StickyData for StickyParameters {
+    type Request = v4::Request;
+
+    fn apply(&self, req: &mut Self::Request) {
+        req.extensions.e2ee.enabled = Some(true);
+        req.extensions.to_device.enabled = Some(true);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ToDeviceLoop {
@@ -29,6 +43,9 @@ pub struct ToDeviceLoop {
 
     /// Latest position marker sent by the server.
     pos: Arc<RwLock<Option<String>>>,
+
+    /// Set of sticky parameters for the to-device loop.
+    sticky: Arc<RwLock<StickyManager<StickyParameters>>>,
 
     /// A lock to serialize processing of responses.
     response_handling_lock: Arc<AsyncMutex<()>>,
@@ -65,6 +82,7 @@ impl ToDeviceLoop {
             pos: Arc::new(RwLock::new(None)),
             response_handling_lock: Default::default(),
             storage_key,
+            sticky: Arc::new(RwLock::new(StickyManager::new(StickyParameters))),
         }
     }
 
@@ -90,20 +108,25 @@ impl ToDeviceLoop {
             // Keep a small timeout, as the process running this loop might be short-lived.
             let timeout = Duration::from_secs(10);
 
-            // Always request e2ee (so we get keys) as well as to-device events.
+            // Always provide the to-device `since` token.
             let mut extensions = v4::ExtensionsConfig::default();
-            extensions.e2ee.enabled = Some(true);
-            extensions.to_device.enabled = Some(true);
             extensions.to_device.since = since;
+
+            let txn_id = TransactionId::new();
+            let mut req = assign!(v4::Request::new(), {
+                txn_id: Some(txn_id.to_string()),
+                pos: self.pos.read().unwrap().clone(),
+                conn_id: Some(self.connection_id.clone()),
+                timeout: Some(timeout),
+                extensions,
+            });
+
+            // Maybe apply sticky parameters to enable the e2ee and to-device extensions.
+            self.sticky.write().unwrap().maybe_apply(&mut req, &txn_id);
 
             (
                 // Build the request itself.
-                assign!(v4::Request::new(), {
-                    pos: self.pos.read().unwrap().clone(),
-                    conn_id: Some(self.connection_id.clone()),
-                    timeout: Some(timeout),
-                    extensions,
-                }),
+                req,
                 // Configure long-polling. We need 10 seconds for the long-poll itself, in
                 // addition to 10 more extra seconds for the network delays.
                 RequestConfig::default().timeout(timeout + Duration::from_secs(10)),
@@ -190,6 +213,9 @@ impl ToDeviceLoop {
         debug!(?sync_response, "To-device sliding sync response has been handled by the client");
 
         *self.pos.write().unwrap() = Some(response.pos);
+        if let Some(txn_id) = response.txn_id {
+            self.sticky.write().unwrap().maybe_commit(txn_id.as_str().into());
+        }
 
         if let Some(to_device) = response.extensions.to_device {
             let mut since_token = self.since_token.write().unwrap();
@@ -260,6 +286,8 @@ impl ToDeviceLoop {
     pub fn invalidate_session(&self) {
         // Reset the `pos` marker.
         *self.pos.write().unwrap() = None;
+        // Make sure sticky parameters are sent again in the next request.
+        let _ = self.sticky.write().unwrap().data_mut();
     }
 }
 
