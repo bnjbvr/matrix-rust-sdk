@@ -465,6 +465,10 @@ impl SlidingSync {
         self.inner.to_device_sync_loop.sync_once().await
     }
 
+    fn invalidate_to_device(&self) {
+        self.inner.to_device_sync_loop.invalidate_session();
+    }
+
     #[instrument(skip_all, fields(pos))]
     async fn sync_once(&self) -> Result<Option<UpdateSummary>> {
         let (request, request_config, requested_room_unsubscriptions) =
@@ -602,6 +606,11 @@ impl SlidingSync {
 
                     to_device_result = self.sync_to_device_once().instrument(sync_span.clone()) => {
                         if let Err(err) = to_device_result {
+                            if err.client_api_error_kind() == Some(&ErrorKind::UnknownPos) {
+                                // TODO try to handle N errors, then abandon, as the other arm does?
+                                self.invalidate_to_device();
+                            }
+
                             // Propagate errors to the stream's callers, as there's no position tracking here.
                             yield Err(err);
 

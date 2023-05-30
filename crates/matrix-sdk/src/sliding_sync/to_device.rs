@@ -27,6 +27,9 @@ pub struct ToDeviceLoop {
     /// Cached to / reloaded from the disk; may be none for the first request.
     since_token: Arc<RwLock<Option<String>>>,
 
+    /// Latest position marker sent by the server.
+    pos: Arc<RwLock<Option<String>>>,
+
     /// A lock to serialize processing of responses.
     response_handling_lock: Arc<AsyncMutex<()>>,
 
@@ -59,6 +62,7 @@ impl ToDeviceLoop {
             connection_id,
             homeserver,
             since_token: Default::default(),
+            pos: Arc::new(RwLock::new(None)),
             response_handling_lock: Default::default(),
             storage_key,
         }
@@ -95,6 +99,7 @@ impl ToDeviceLoop {
             (
                 // Build the request itself.
                 assign!(v4::Request::new(), {
+                    pos: self.pos.read().unwrap().clone(),
                     conn_id: Some(self.connection_id.clone()),
                     timeout: Some(timeout),
                     extensions,
@@ -173,28 +178,30 @@ impl ToDeviceLoop {
     }
 
     /// Handle the HTTP response.
-    async fn handle_response(
-        &self,
-        sliding_sync_response: v4::Response,
-    ) -> Result<(), crate::Error> {
+    async fn handle_response(&self, response: v4::Response) -> Result<(), crate::Error> {
         // Transform a Sliding Sync Response to a `SyncResponse`.
         //
         // We may not need the `sync_response` in the future (once `SyncResponse` will
         // move to Sliding Sync, i.e. to `v4::Response`), but processing the
         // `sliding_sync_response` is vital, so it must be done somewhere; for now it
         // happens here.
-        let sync_response = self.client.process_sliding_sync(&sliding_sync_response).await?;
+        let sync_response = self.client.process_sliding_sync(&response).await?;
 
         debug!(?sync_response, "To-device sliding sync response has been handled by the client");
 
-        if let Some(response) = sliding_sync_response.extensions.to_device {
+        *self.pos.write().unwrap() = Some(response.pos);
+
+        if let Some(to_device) = response.extensions.to_device {
             let mut since_token = self.since_token.write().unwrap();
-            *since_token = Some(response.next_batch);
+            *since_token = Some(to_device.next_batch);
         }
 
         Ok(())
     }
 
+    /// Returns the full storage key for this to-device sync loop.
+    ///
+    /// This must remain stable, as it's used as a key in the KV store.
     fn full_storage_key(&self, storage_key: &str) -> String {
         format!("{storage_key}-{}-to-device-loop", self.connection_id)
     }
@@ -247,6 +254,12 @@ impl ToDeviceLoop {
         }
 
         Ok(())
+    }
+
+    /// Invalidates the current session, after the server has told us it doesn't know about some `pos` marker value.
+    pub fn invalidate_session(&self) {
+        // Reset the `pos` marker.
+        *self.pos.write().unwrap() = None;
     }
 }
 
