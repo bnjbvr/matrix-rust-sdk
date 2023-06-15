@@ -26,6 +26,9 @@ use std::{
 };
 
 use futures_util::stream::{self, StreamExt};
+use matrix_sdk_base::crypto::{
+    self, store::locks::CryptoStoreLock, OutgoingRequest, RoomMessageRequest, ToDeviceRequest,
+};
 pub use matrix_sdk_base::crypto::{
     olm::{
         SessionCreationError as MegolmSessionCreationError,
@@ -35,7 +38,6 @@ pub use matrix_sdk_base::crypto::{
     LocalTrust, MediaEncryptionInfo, MegolmError, OlmError, RoomKeyImportResult, SecretImportError,
     SessionCreationError, SignatureError, VERSION,
 };
-use matrix_sdk_base::crypto::{OutgoingRequest, RoomMessageRequest, ToDeviceRequest};
 use ruma::{
     api::client::{
         backup::add_backup_keys::v3::Response as KeysBackupResponse,
@@ -816,6 +818,15 @@ impl Encryption {
         let import = task.await.expect("Task join error")?;
 
         Ok(olm.import_room_keys(import, false, |_, _| {}).await?)
+    }
+
+    pub fn create_store_lock(
+        &self,
+        lock_key: String,
+        lock_value: String,
+    ) -> Result<CryptoStoreLock> {
+        let olm = self.client.olm_machine().ok_or(Error::AuthenticationRequired)?;
+        Ok(olm.store().create_store_lock(lock_key, lock_value))
     }
 }
 

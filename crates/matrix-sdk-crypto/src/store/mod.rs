@@ -97,6 +97,8 @@ pub use traits::{CryptoStore, DynCryptoStore, IntoCryptoStore};
 
 pub use crate::gossiping::{GossipRequest, SecretInfo};
 
+use self::locks::CryptoStoreLock;
+
 /// A wrapper for our CryptoStore trait object.
 ///
 /// This is needed because we want to have a generic interface so we can
@@ -994,6 +996,10 @@ impl Store {
                 }
             }
         })
+    }
+
+    pub fn create_store_lock(&self, lock_key: String, lock_value: String) -> CryptoStoreLock {
+        CryptoStoreLock::new(self.inner.store.clone(), lock_key, lock_value)
     }
 }
 

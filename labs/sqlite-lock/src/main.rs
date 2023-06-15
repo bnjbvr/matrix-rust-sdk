@@ -83,7 +83,7 @@ async fn parent_main(path: &Path, write_pipe: i32) -> Result<()> {
     // Set initial generation to 0.
     store.set_custom_value(GENERATION_KEY, vec![generation]).await?;
 
-    let mut lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "parent".to_owned(), None);
+    let mut lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "parent".to_owned());
 
     loop {
         // Write a command.
@@ -117,7 +117,7 @@ async fn parent_main(path: &Path, write_pipe: i32) -> Result<()> {
 
         loop {
             // Compete with the child to take the lock!
-            lock.lock().await?;
+            lock.spin_lock(None).await?;
 
             let read_generation =
                 store.get_custom_value(GENERATION_KEY).await?.expect("there's always a generation")
@@ -151,7 +151,7 @@ async fn child_main(path: &Path, read_pipe: i32) -> Result<()> {
     let store = SqliteCryptoStore::open(path, None).await?.into_crypto_store();
     let lock_key = LOCK_KEY.to_string();
 
-    let mut lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "child".to_owned(), None);
+    let mut lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "child".to_owned());
 
     loop {
         eprintln!("child waits for command");
@@ -159,7 +159,7 @@ async fn child_main(path: &Path, read_pipe: i32) -> Result<()> {
             Command::WriteValue(val) => {
                 eprintln!("child received command: write {val}; waiting for lock");
 
-                lock.lock().await?;
+                lock.spin_lock(None).await?;
 
                 eprintln!("child got the lock");
 
@@ -175,7 +175,7 @@ async fn child_main(path: &Path, read_pipe: i32) -> Result<()> {
             Command::ReadValue(expected) => {
                 eprintln!("child received command: read {expected}; waiting for lock");
 
-                lock.lock().await?;
+                lock.spin_lock(None).await?;
 
                 eprintln!("child got the lock");
 
