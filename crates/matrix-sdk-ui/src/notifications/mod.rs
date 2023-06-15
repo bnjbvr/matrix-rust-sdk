@@ -30,10 +30,14 @@
 //!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
 
+use std::ops::Not as _;
+
 use async_stream::stream;
 use futures_core::stream::Stream;
 use futures_util::{pin_mut, StreamExt};
 use matrix_sdk::{Client, SlidingSync};
+use matrix_sdk_base::crypto::store::locks::CryptoStoreLock;
+use matrix_sdk_crypto::CryptoStoreError;
 use ruma::{api::client::sync::sync_events::v4, assign};
 use tracing::error;
 
@@ -42,7 +46,9 @@ use tracing::error;
 /// See the module's documentation for more details.
 #[derive(Clone)]
 pub struct NotificationSync {
+    client: Client,
     sliding_sync: SlidingSync,
+    cross_process_lock: CryptoStoreLock,
 }
 
 impl NotificationSync {
@@ -53,8 +59,9 @@ impl NotificationSync {
     /// sure to not reuse a name used by another Sliding Sync instance, at
     /// the risk of causing problems.
     pub async fn new(id: impl Into<String>, client: Client) -> Result<Self, Error> {
+        let id = id.into();
         let sliding_sync = client
-            .sliding_sync(id)?
+            .sliding_sync(id.clone())?
             .enable_caching()?
             .with_to_device_extension(
                 assign!(v4::ToDeviceConfig::default(), { enabled: Some(true)}),
@@ -63,7 +70,12 @@ impl NotificationSync {
             .build()
             .await?;
 
-        Ok(Self { sliding_sync })
+        let cross_process_lock = client
+            .encryption()
+            .create_store_lock("write_lock".to_owned(), id)
+            .map_err(|_| Error::AuthenticationRequired)?;
+
+        Ok(Self { client, sliding_sync, cross_process_lock })
     }
 
     /// Start synchronization of notifications.
@@ -77,6 +89,28 @@ impl NotificationSync {
             pin_mut!(sync);
 
             loop {
+                // Start by being pessimistic and assume some other process has the lock, so writes
+                // to the custom stores are forbidden, in particular preshare_room_key requests.
+                let write_crypto_store_lock = self.client.preshare_room_key_lock();
+                let write_crypto_store_guard = write_crypto_store_lock.lock().await;
+
+                // Try to obtain the cross-process lock.
+                if self.cross_process_lock.try_lock_once().await?.not() {
+                    // We didn't get the lock on the first time, so that means that another process
+                    // is using it. Wait for it to release it.
+                    self.cross_process_lock.spin_lock(Some(10000)).await?;
+
+                    // As we didn't get the lock on the first attempt, force-reload all the crypto
+                    // state at once, by recreating the OlmMachine.
+                    if let Err(err) = self.client.regenerate_olm().await {
+                        self.cross_process_lock.unlock().await?;
+                    };
+                }
+
+                // We obtained the cross-process lock. Now allow the preshare_room_key requests to
+                // continue.
+                drop(write_crypto_store_guard);
+
                 match sync.next().await {
                     Some(Ok(update_summary)) => {
                         // This API is only concerned with the e2ee and to-device extensions.
@@ -88,6 +122,8 @@ impl NotificationSync {
                             error!(?update_summary.rooms, "unexpected non-empty list of rooms in notification API");
                         }
 
+                        self.cross_process_lock.unlock().await?;
+
                         // Cool cool, let's do it again.
                         yield Ok(());
 
@@ -95,12 +131,15 @@ impl NotificationSync {
                     }
 
                     Some(Err(err)) => {
+                        self.cross_process_lock.unlock().await?;
+
                         yield Err(err.into());
 
                         break;
                     }
 
                     None => {
+                        self.cross_process_lock.unlock().await?;
                         break;
                     }
                 }
@@ -113,5 +152,11 @@ impl NotificationSync {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Something wrong happened in sliding sync: {0:#}")]
-    SlidingSyncError(#[from] matrix_sdk::Error),
+    SlidingSync(#[from] matrix_sdk::Error),
+
+    #[error("The client was not authenticated")]
+    AuthenticationRequired,
+
+    #[error(transparent)]
+    CryptoStore(#[from] CryptoStoreError),
 }
