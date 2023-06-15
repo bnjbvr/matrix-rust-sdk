@@ -841,12 +841,13 @@ impl Encryption {
         Ok(olm.import_room_keys(import, false, |_, _| {}).await?)
     }
 
-    pub fn create_store_lock(
+    pub async fn create_store_lock(
         &self,
         lock_key: String,
         lock_value: String,
     ) -> Result<CryptoStoreLock> {
-        let olm = self.client.olm_machine().ok_or(Error::AuthenticationRequired)?;
+        let olm = self.client.olm_machine().await;
+        let olm = olm.as_ref().ok_or(Error::AuthenticationRequired)?;
         Ok(olm.store().create_store_lock(lock_key, lock_value))
     }
 }
