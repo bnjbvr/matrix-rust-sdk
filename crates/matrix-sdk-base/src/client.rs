@@ -235,20 +235,30 @@ impl BaseClient {
         self.store.set_session_meta(session_meta.clone()).await?;
 
         #[cfg(feature = "e2e-encryption")]
-        {
-            let olm_machine = OlmMachine::with_store(
-                &session_meta.user_id,
-                &session_meta.device_id,
-                self.crypto_store.clone(),
-            )
-            .await
-            .map_err(OlmError::from)?;
+        self.regenerate_olm().await?;
 
-            if self.olm_machine.set(olm_machine).is_err() {
-                return Err(Error::BadCryptoStoreState);
-            }
+        Ok(())
+    }
+
+    #[cfg(feature = "e2e-encryption")]
+    pub async fn regenerate_olm(&self) -> Result<()> {
+        let session_meta = self.session_meta().ok_or(Error::OlmError(OlmError::MissingSession))?;
+
+        // Empty the cell.
+        let _ = self.olm_machine.take();
+
+        // Recreate it.
+        let olm_machine = OlmMachine::with_store(
+            &session_meta.user_id,
+            &session_meta.device_id,
+            self.crypto_store.clone(),
+        )
+        .await
+        .map_err(OlmError::from)?;
+
+        if self.olm_machine.set(olm_machine).is_err() {
+            return Err(Error::BadCryptoStoreState);
         }
-
         Ok(())
     }
 
