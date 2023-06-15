@@ -95,9 +95,8 @@ use matrix_sdk_common::timeout::timeout;
 pub use memorystore::MemoryStore;
 pub use traits::{CryptoStore, DynCryptoStore, IntoCryptoStore};
 
-pub use crate::gossiping::{GossipRequest, SecretInfo};
-
 use self::locks::CryptoStoreLock;
+pub use crate::gossiping::{GossipRequest, SecretInfo};
 
 /// A wrapper for our CryptoStore trait object.
 ///

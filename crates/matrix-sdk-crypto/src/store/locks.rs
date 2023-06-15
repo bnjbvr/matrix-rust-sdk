@@ -110,9 +110,10 @@ impl CryptoStoreLock {
     /// Attempt to take the lock, with exponential backoff if the lock has
     /// already been taken before.
     ///
-    /// The `max_backoff` parameter is the maximum time (in milliseconds) that should be waited
-    /// for, between two attempts. When that time is reached a second time, the lock will stop
-    /// attempting to get the lock and will return a timeout error upon locking. If not provided,
+    /// The `max_backoff` parameter is the maximum time (in milliseconds) that
+    /// should be waited for, between two attempts. When that time is
+    /// reached a second time, the lock will stop attempting to get the lock
+    /// and will return a timeout error upon locking. If not provided,
     /// will wait for [`Self::MAX_BACKOFF_MS`].
     pub async fn spin_lock(&self, max_backoff: Option<u32>) -> Result<(), CryptoStoreError> {
         let max_backoff = max_backoff.unwrap_or(Self::MAX_BACKOFF_MS);
