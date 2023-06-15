@@ -410,6 +410,8 @@ impl ClientBuilder {
             group_session_locks: Default::default(),
             #[cfg(feature = "e2e-encryption")]
             key_claim_lock: Default::default(),
+            #[cfg(feature = "e2e-encryption")]
+            preshare_room_key_lock: Default::default(),
             members_request_locks: Default::default(),
             encryption_state_request_locks: Default::default(),
             typing_notice_times: Default::default(),

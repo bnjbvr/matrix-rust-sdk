@@ -367,6 +367,9 @@ impl Joined {
     #[cfg(feature = "e2e-encryption")]
     #[instrument(skip_all, fields(room_id = ?self.room_id()))]
     async fn preshare_room_key(&self) -> Result<()> {
+        // Make sure we're allowed to make this request.
+        let _request_lock = self.client.inner.preshare_room_key_lock.lock().await;
+
         let mut map = self.client.inner.group_session_locks.lock().await;
 
         if let Some(mutex) = map.get(self.inner.room_id()).cloned() {
