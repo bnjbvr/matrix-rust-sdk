@@ -83,7 +83,7 @@ async fn parent_main(path: &Path, write_pipe: i32) -> Result<()> {
     // Set initial generation to 0.
     store.set_custom_value(GENERATION_KEY, vec![generation]).await?;
 
-    let mut lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "parent".to_owned());
+    let lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "parent".to_owned());
 
     loop {
         // Write a command.
@@ -151,7 +151,7 @@ async fn child_main(path: &Path, read_pipe: i32) -> Result<()> {
     let store = SqliteCryptoStore::open(path, None).await?.into_crypto_store();
     let lock_key = LOCK_KEY.to_string();
 
-    let mut lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "child".to_owned());
+    let lock = CryptoStoreLock::new(store.clone(), lock_key.clone(), "child".to_owned());
 
     loop {
         eprintln!("child waits for command");
@@ -185,7 +185,8 @@ async fn child_main(path: &Path, read_pipe: i32) -> Result<()> {
                 store.remove_custom_value(KEY).await?;
 
                 let generation = store.get_custom_value(GENERATION_KEY).await?.unwrap()[0];
-                store.set_custom_value(GENERATION_KEY, vec![generation + 1]).await?;
+                let generation = generation.wrapping_add(1);
+                store.set_custom_value(GENERATION_KEY, vec![generation]).await?;
 
                 lock.unlock().await?;
             }
