@@ -30,7 +30,10 @@
 //!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
 
-use std::ops::Not as _;
+use std::{
+    ops::Not as _,
+    sync::atomic::{AtomicI32, Ordering},
+};
 
 use async_stream::stream;
 use futures_core::stream::Stream;
@@ -41,14 +44,19 @@ use matrix_sdk_crypto::CryptoStoreError;
 use ruma::{api::client::sync::sync_events::v4, assign};
 use tracing::error;
 
+pub enum NotificationSyncMode {
+    RunFixedAttempts(u8),
+    NeverStop,
+}
+
 /// High-level helper for synchronizing notifications using sliding sync.
 ///
 /// See the module's documentation for more details.
-#[derive(Clone)]
 pub struct NotificationSync {
     client: Client,
     sliding_sync: SlidingSync,
     cross_process_lock: CryptoStoreLock,
+    num_attempts: AtomicI32,
 }
 
 impl NotificationSync {
@@ -58,7 +66,11 @@ impl NotificationSync {
     /// The `id` is used as the identifier of that instance, as such make
     /// sure to not reuse a name used by another Sliding Sync instance, at
     /// the risk of causing problems.
-    pub async fn new(id: impl Into<String>, client: Client) -> Result<Self, Error> {
+    pub async fn new(
+        id: impl Into<String>,
+        mode: NotificationSyncMode,
+        client: Client,
+    ) -> Result<Self, Error> {
         let id = id.into();
         let sliding_sync = client
             .sliding_sync(id.clone())?
@@ -73,9 +85,15 @@ impl NotificationSync {
         let cross_process_lock = client
             .encryption()
             .create_store_lock("write_lock".to_owned(), id)
+            .await
             .map_err(|_| Error::AuthenticationRequired)?;
 
-        Ok(Self { client, sliding_sync, cross_process_lock })
+        let num_attempts = match mode {
+            NotificationSyncMode::RunFixedAttempts(val) => i32::from(val),
+            NotificationSyncMode::NeverStop => -1,
+        };
+
+        Ok(Self { client, sliding_sync, cross_process_lock, num_attempts: num_attempts.into() })
     }
 
     /// Start synchronization of notifications.
@@ -89,8 +107,20 @@ impl NotificationSync {
             pin_mut!(sync);
 
             loop {
-                // Start by being pessimistic and assume some other process has the lock, so writes
-                // to the custom stores are forbidden, in particular preshare_room_key requests.
+                let num_attempts = self.num_attempts.load(Ordering::SeqCst);
+                if num_attempts == 0 {
+                    // If the previous attempt was the last one, stop now.
+                    break;
+                }
+
+                if num_attempts > 0 {
+                    // If there's a finite number of attempt, decrement.
+                    self.num_attempts.store(num_attempts - 1, Ordering::SeqCst);
+                }
+
+                // Start by being pessimistic and assume some other process has the lock, so
+                // writes to the custom stores are forbidden, in particular
+                // preshare_room_key requests.
                 let write_crypto_store_lock = self.client.preshare_room_key_lock();
                 let write_crypto_store_guard = write_crypto_store_lock.lock().await;
 
@@ -102,14 +132,16 @@ impl NotificationSync {
 
                     // As we didn't get the lock on the first attempt, force-reload all the crypto
                     // state at once, by recreating the OlmMachine.
-                    if let Err(err) = self.client.regenerate_olm().await {
+                    if self.client.regenerate_olm().await.is_err() {
                         self.cross_process_lock.unlock().await?;
                     };
                 }
 
-                // We obtained the cross-process lock. Now allow the preshare_room_key requests to
-                // continue.
+                // We obtained the cross-process lock. Now allow the preshare_room_key requests
+                // to continue.
                 drop(write_crypto_store_guard);
+
+                // TODO must have an internal stop mechanism like sliding sync.
 
                 match sync.next().await {
                     Some(Ok(update_summary)) => {
