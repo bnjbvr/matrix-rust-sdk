@@ -148,7 +148,7 @@ impl CryptoStoreLock {
     /// Release the lock taken previously with [`lock()`].
     ///
     /// Will return an error if the lock wasn't taken.
-    pub async fn unlock(&mut self) -> Result<(), CryptoStoreError> {
+    pub async fn unlock(&self) -> Result<(), CryptoStoreError> {
         let read = self
             .store
             .get_custom_value(&self.lock_key)
