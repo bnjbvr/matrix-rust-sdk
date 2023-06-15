@@ -27,6 +27,7 @@ mod error;
 mod event;
 mod helpers;
 mod notification;
+mod notification_sync;
 mod platform;
 mod room;
 mod room_list;

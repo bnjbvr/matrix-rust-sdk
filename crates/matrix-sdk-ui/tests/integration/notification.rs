@@ -1,6 +1,6 @@
 use futures_util::{pin_mut, StreamExt as _};
 use matrix_sdk_test::async_test;
-use matrix_sdk_ui::notifications::NotificationSync;
+use matrix_sdk_ui::notifications::{NotificationSync, NotificationSyncMode};
 
 use crate::{logged_in_client, sliding_sync_then_assert_request_and_fake_response};
 
@@ -8,7 +8,8 @@ use crate::{logged_in_client, sliding_sync_then_assert_request_and_fake_response
 async fn test_smoke_test_notification_api() -> anyhow::Result<()> {
     let (client, server) = logged_in_client().await;
 
-    let notification_api = NotificationSync::new("notifs".to_owned(), client).await?;
+    let notification_api =
+        NotificationSync::new("notifs".to_owned(), NotificationSyncMode::NeverStop, client).await?;
 
     let notification_stream = notification_api.sync();
     pin_mut!(notification_stream);

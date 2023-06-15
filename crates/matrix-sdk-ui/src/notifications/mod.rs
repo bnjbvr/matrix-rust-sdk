@@ -133,15 +133,18 @@ impl NotificationSync {
                     // As we didn't get the lock on the first attempt, force-reload all the crypto
                     // state at once, by recreating the OlmMachine.
                     if self.client.regenerate_olm().await.is_err() {
+                        // First, give back the cross-process lock.
                         self.cross_process_lock.unlock().await?;
+
+                        // Return the error by yielding and then stopping.
+                        yield Err(Error::ReloadCryptoStoreError);
+                        break;
                     };
                 }
 
                 // We obtained the cross-process lock. Now allow the preshare_room_key requests
                 // to continue.
                 drop(write_crypto_store_guard);
-
-                // TODO must have an internal stop mechanism like sliding sync.
 
                 match sync.next().await {
                     Some(Ok(update_summary)) => {
@@ -178,6 +181,14 @@ impl NotificationSync {
             }
         })
     }
+
+    pub async fn stop(&self) -> Result<(), Error> {
+        self.sliding_sync.stop_sync()?;
+
+        self.cross_process_lock.maybe_unlock().await?;
+
+        Ok(())
+    }
 }
 
 /// Errors for the [`NotificationSync`].
@@ -191,4 +202,7 @@ pub enum Error {
 
     #[error(transparent)]
     CryptoStore(#[from] CryptoStoreError),
+
+    #[error("The crypto store state couldn't be reloaded")]
+    ReloadCryptoStoreError,
 }
