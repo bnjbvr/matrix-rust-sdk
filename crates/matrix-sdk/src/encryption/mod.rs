@@ -26,7 +26,6 @@ use std::{
 };
 
 use futures_util::stream::{self, StreamExt};
-use matrix_sdk_base::crypto::OlmMachine;
 pub use matrix_sdk_base::crypto::{
     olm::{
         SessionCreationError as MegolmSessionCreationError,
@@ -37,7 +36,7 @@ pub use matrix_sdk_base::crypto::{
     SessionCreationError, SignatureError, VERSION,
 };
 use matrix_sdk_base::crypto::{
-    store::locks::CryptoStoreLock, OutgoingRequest, RoomMessageRequest, ToDeviceRequest,
+    store::locks::CryptoStoreLock, OlmMachine, OutgoingRequest, RoomMessageRequest, ToDeviceRequest,
 };
 use ruma::{
     api::client::{

@@ -25,12 +25,9 @@
 //!   `insert_custom_value_if_missing` and
 //! `remove_custom_value`, must be atomic / implemented in a transaction.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
-use tokio::time::sleep;
+use tokio::{sync::Mutex, time::sleep};
 
 use super::DynCryptoStore;
 use crate::CryptoStoreError;
@@ -84,8 +81,6 @@ impl CryptoStoreLock {
             .await?;
 
         if inserted {
-            // Reset backoff before returning, for the next attempt to lock.
-            *self.backoff.lock().unwrap() = Self::INITIAL_BACKOFF_MS;
             return Ok(true);
         }
 
@@ -100,7 +95,6 @@ impl CryptoStoreLock {
                 self.lock_key,
                 self.lock_holder
             );
-            *self.backoff.lock().unwrap() = Self::INITIAL_BACKOFF_MS;
             return Ok(true);
         }
 
@@ -120,12 +114,14 @@ impl CryptoStoreLock {
 
         loop {
             if self.try_lock_once().await? {
+                // Reset backoff before returning, for the next attempt to lock.
+                *self.backoff.lock().await = Self::INITIAL_BACKOFF_MS;
                 return Ok(());
             }
 
             // Exponential backoff! Multiply by 2 the time we've waited before, cap it to
             // max_backoff.
-            let mut backoff = self.backoff.lock().unwrap();
+            let mut backoff = self.backoff.lock().await;
             let wait = *backoff;
 
             // If we've set the sentinel value before, that means this wait would be longer
@@ -143,6 +139,26 @@ impl CryptoStoreLock {
             }
 
             sleep(Duration::from_millis(wait.into())).await;
+        }
+    }
+
+    pub async fn maybe_unlock(&self) -> Result<(), CryptoStoreError> {
+        let read = self
+            .store
+            .get_custom_value(&self.lock_key)
+            .await?
+            .ok_or(CryptoStoreError::from(LockStoreError::MissingLockValue))?;
+
+        if read == self.lock_holder.as_bytes() {
+            let removed = self.store.remove_custom_value(&self.lock_key).await?;
+            if removed {
+                Ok(())
+            } else {
+                Err(LockStoreError::MissingLockValue.into())
+            }
+        } else {
+            // Wasn't ours, silently return.
+            Ok(())
         }
     }
 
