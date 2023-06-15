@@ -6,10 +6,7 @@ use matrix_sdk_ui::notifications::{
 };
 use tracing::{error, warn};
 
-use crate::client::Client;
-use crate::error::ClientError;
-use crate::task_handle::TaskHandle;
-use crate::RUNTIME;
+use crate::{client::Client, error::ClientError, task_handle::TaskHandle, RUNTIME};
 
 #[uniffi::export(callback_interface)]
 pub trait NotificationSyncListener: Sync + Send {

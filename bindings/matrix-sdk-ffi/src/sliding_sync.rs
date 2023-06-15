@@ -15,10 +15,7 @@ use matrix_sdk::{
     LoopCtrl, RoomListEntry as MatrixRoomEntry, SlidingSyncBuilder as MatrixSlidingSyncBuilder,
     SlidingSyncListLoadingState, SlidingSyncMode,
 };
-use matrix_sdk_ui::{
-    notifications::{NotificationSync as MatrixNotificationSync, NotificationSyncMode},
-    timeline::SlidingSyncRoomExt,
-};
+use matrix_sdk_ui::timeline::SlidingSyncRoomExt;
 use tracing::{error, warn};
 
 use crate::{
