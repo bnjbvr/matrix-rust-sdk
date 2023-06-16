@@ -142,26 +142,6 @@ impl CryptoStoreLock {
         }
     }
 
-    pub async fn maybe_unlock(&self) -> Result<(), CryptoStoreError> {
-        let read = self
-            .store
-            .get_custom_value(&self.lock_key)
-            .await?
-            .ok_or(CryptoStoreError::from(LockStoreError::MissingLockValue))?;
-
-        if read == self.lock_holder.as_bytes() {
-            let removed = self.store.remove_custom_value(&self.lock_key).await?;
-            if removed {
-                Ok(())
-            } else {
-                Err(LockStoreError::MissingLockValue.into())
-            }
-        } else {
-            // Wasn't ours, silently return.
-            Ok(())
-        }
-    }
-
     /// Release the lock taken previously with [`lock()`].
     ///
     /// Will return an error if the lock wasn't taken.
