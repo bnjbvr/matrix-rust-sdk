@@ -26,16 +26,13 @@
 //!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
 
-use std::{
-    ops::Not as _,
-    sync::atomic::{AtomicI32, Ordering},
-};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use async_stream::stream;
 use futures_core::stream::Stream;
 use futures_util::{pin_mut, StreamExt};
 use matrix_sdk::{Client, SlidingSync};
-use matrix_sdk_base::crypto::store::locks::CryptoStoreLock;
+
 use matrix_sdk_crypto::CryptoStoreError;
 use ruma::{api::client::sync::sync_events::v4, assign};
 use tracing::error;
@@ -51,7 +48,6 @@ pub enum NotificationSyncMode {
 pub struct NotificationSync {
     client: Client,
     sliding_sync: SlidingSync,
-    cross_process_lock: CryptoStoreLock,
     num_attempts: AtomicI32,
 }
 
@@ -78,18 +74,24 @@ impl NotificationSync {
             .build()
             .await?;
 
-        let cross_process_lock = client
-            .encryption()
-            .create_store_lock("write_lock".to_owned(), id)
-            .await
-            .map_err(|_| Error::AuthenticationRequired)?;
+        // Gently try to set the cross-process lock on behalf of the user.
+        match client.encryption().enable_cross_process_store_lock(id).await {
+            Ok(()) | Err(matrix_sdk::Error::BadCryptoStoreState) => {
+                // Ignore; we've already set the crypto store lock to something, and that's
+                // sufficient as long as it uniquely identifies the process.
+            }
+            Err(err) => {
+                // Any other error is fatal
+                return Err(Error::ClientError(err));
+            }
+        };
 
         let num_attempts = match mode {
             NotificationSyncMode::RunFixedIterations(val) => i32::from(val),
             NotificationSyncMode::NeverStop => -1,
         };
 
-        Ok(Self { client, sliding_sync, cross_process_lock, num_attempts: num_attempts.into() })
+        Ok(Self { client, sliding_sync, num_attempts: num_attempts.into() })
     }
 
     /// Start synchronization of notifications.
@@ -114,43 +116,14 @@ impl NotificationSync {
                     self.num_attempts.store(num_attempts - 1, Ordering::SeqCst);
                 }
 
-                // Start by being pessimistic and assume some other process has the lock, so
-                // writes to the custom stores are forbidden, in particular
-                // preshare_room_key requests.
-                let write_crypto_store_lock = self.client.preshare_room_key_lock();
-                let write_crypto_store_guard = write_crypto_store_lock.lock().await;
-
-                // Try to obtain the cross-process lock.
-                if self.cross_process_lock.try_lock_once().await?.not() {
-                    // HACK: this conditional is a way to recognize the NSE loop; need a better
-                    // API for that.
-                    if num_attempts != -1 {
-                        // If we're in a notification process, and the lock is already taken, then
-                        // the main app is running, and we let it do its work.
-                        // TODO The embedder is expected to retry, in that case, but they can't be
-                        // notified of it?
-                        return;
-                    }
-
-                    // We didn't get the lock on the first time, so that means that another process
-                    // is using it. Wait for it to release it.
-                    self.cross_process_lock.spin_lock(Some(10000)).await?;
-
-                    // As we didn't get the lock on the first attempt, force-reload all the crypto
-                    // state at once, by recreating the OlmMachine.
-                    if self.client.regenerate_olm().await.is_err() {
-                        // First, give back the cross-process lock.
-                        self.cross_process_lock.unlock().await?;
-
-                        // Return the error by yielding and then stopping.
-                        yield Err(Error::ReloadCryptoStoreError);
-                        break;
-                    };
-                }
-
-                // We obtained the cross-process lock. Now allow the preshare_room_key requests
-                // to continue.
-                drop(write_crypto_store_guard);
+                let must_unlock = if num_attempts == -1 {
+                    // Notification process.
+                    self.client.encryption().try_lock_store_once().await?
+                } else {
+                    // Main process.
+                    self.client.encryption().spin_lock_store(Some(60000)).await?;
+                    true
+                };
 
                 match sync.next().await {
                     Some(Ok(update_summary)) => {
@@ -163,7 +136,9 @@ impl NotificationSync {
                             error!(?update_summary.rooms, "unexpected non-empty list of rooms in notification API");
                         }
 
-                        self.cross_process_lock.unlock().await?;
+                        if must_unlock {
+                            self.client.encryption().unlock_store().await?;
+                        }
 
                         // Cool cool, let's do it again.
                         yield Ok(());
@@ -172,7 +147,9 @@ impl NotificationSync {
                     }
 
                     Some(Err(err)) => {
-                        self.cross_process_lock.unlock().await?;
+                        if must_unlock {
+                            self.client.encryption().unlock_store().await?;
+                        }
 
                         yield Err(err.into());
 
@@ -180,7 +157,9 @@ impl NotificationSync {
                     }
 
                     None => {
-                        self.cross_process_lock.unlock().await?;
+                        if must_unlock {
+                            self.client.encryption().unlock_store().await?;
+                        }
                         break;
                     }
                 }
@@ -211,4 +190,7 @@ pub enum Error {
 
     #[error("The crypto store state couldn't be reloaded")]
     ReloadCryptoStoreError,
+
+    #[error(transparent)]
+    ClientError(matrix_sdk::Error),
 }

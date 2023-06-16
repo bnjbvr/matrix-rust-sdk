@@ -38,6 +38,9 @@ pub struct CryptoStoreLock {
     /// The store we're using to lock.
     store: Arc<DynCryptoStore>,
 
+    /// Small cache whether the lock is hold by this process.
+    is_locked: Arc<Mutex<bool>>,
+
     /// The key used in the key/value mapping for the lock entry.
     lock_key: String,
 
@@ -70,17 +73,26 @@ impl CryptoStoreLock {
             lock_key,
             lock_holder,
             backoff: Arc::new(Mutex::new(Self::INITIAL_BACKOFF_MS)),
+            is_locked: Arc::new(Mutex::new(false)),
         }
     }
 
     /// Try to lock once, returns whether the lock was obtained or not.
     pub async fn try_lock_once(&self) -> Result<bool, CryptoStoreError> {
+        {
+            let is_locked = *self.is_locked.lock().await;
+            if is_locked {
+                return Ok(true);
+            }
+        }
+
         let inserted = self
             .store
             .insert_custom_value_if_missing(&self.lock_key, self.lock_holder.as_bytes().to_vec())
             .await?;
 
         if inserted {
+            *self.is_locked.lock().await = true;
             return Ok(true);
         }
 
@@ -95,9 +107,11 @@ impl CryptoStoreLock {
                 self.lock_key,
                 self.lock_holder
             );
+            *self.is_locked.lock().await = true;
             return Ok(true);
         }
 
+        *self.is_locked.lock().await = false;
         Ok(false)
     }
 
@@ -158,6 +172,7 @@ impl CryptoStoreLock {
 
         let removed = self.store.remove_custom_value(&self.lock_key).await?;
         if removed {
+            *self.is_locked.lock().await = false;
             Ok(())
         } else {
             Err(LockStoreError::MissingLockValue.into())

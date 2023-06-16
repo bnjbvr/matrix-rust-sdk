@@ -20,6 +20,7 @@ use std::{
     collections::{btree_map, BTreeMap},
     fmt::{self, Debug},
     future::Future,
+    ops::Not as _,
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
 };
@@ -29,8 +30,8 @@ use eyeball::{unique::Observable, Subscriber};
 use futures_core::Stream;
 use futures_util::StreamExt;
 use matrix_sdk_base::{
-    store::DynStateStore, BaseClient, RoomState, RoomStateFilter, SendOutsideWasm, Session,
-    SessionMeta, SessionTokens, SyncOutsideWasm,
+    crypto::store::locks::CryptoStoreLock, store::DynStateStore, BaseClient, RoomState,
+    RoomStateFilter, SendOutsideWasm, Session, SessionMeta, SessionTokens, SyncOutsideWasm,
 };
 use matrix_sdk_common::instant::Instant;
 #[cfg(feature = "appservice")]
@@ -158,9 +159,6 @@ pub(crate) struct ClientInner {
     /// Lock making sure we're only doing one key claim request at a time.
     #[cfg(feature = "e2e-encryption")]
     pub(crate) key_claim_lock: Mutex<()>,
-    /// Lock making sure we're allowed to run a preshare_room_key() request.
-    #[cfg(feature = "e2e-encryption")]
-    pub(crate) preshare_room_key_lock: Arc<Mutex<()>>,
     pub(crate) members_request_locks: Mutex<BTreeMap<OwnedRoomId, Arc<Mutex<()>>>>,
     /// Locks for requests on the encryption state of rooms.
     pub(crate) encryption_state_request_locks: DashMap<OwnedRoomId, Arc<Mutex<()>>>,
@@ -192,6 +190,9 @@ pub(crate) struct ClientInner {
     /// Client API UnknownToken error publisher. Allows the subscriber logout
     /// the user when any request fails because of an invalid access token
     pub(crate) unknown_token_error_sender: broadcast::Sender<UnknownToken>,
+
+    #[cfg(feature = "e2e-encryption")]
+    pub(crate) cross_process_crypto_store_lock: OnceCell<CryptoStoreLock>,
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -2547,16 +2548,6 @@ impl Client {
     pub async fn get_profile(&self, user_id: &UserId) -> Result<get_profile::v3::Response> {
         let request = get_profile::v3::Request::new(user_id.to_owned());
         Ok(self.send(request, Some(RequestConfig::short_retry())).await?)
-    }
-
-    #[doc(hidden)]
-    pub fn preshare_room_key_lock(&self) -> Arc<Mutex<()>> {
-        self.inner.preshare_room_key_lock.clone()
-    }
-
-    pub async fn regenerate_olm(&self) -> Result<()> {
-        self.base_client().regenerate_olm().await?;
-        Ok(())
     }
 }
 
