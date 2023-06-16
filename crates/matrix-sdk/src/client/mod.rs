@@ -20,7 +20,6 @@ use std::{
     collections::{btree_map, BTreeMap},
     fmt::{self, Debug},
     future::Future,
-    ops::Not as _,
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
 };

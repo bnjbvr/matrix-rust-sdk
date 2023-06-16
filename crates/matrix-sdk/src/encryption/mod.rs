@@ -18,11 +18,11 @@
 
 pub mod identities;
 pub mod verification;
-use std::ops::Not as _;
 use std::{
     collections::{BTreeMap, HashSet},
     io::{Read, Write},
     iter,
+    ops::Not as _,
     path::PathBuf,
 };
 
@@ -841,9 +841,10 @@ impl Encryption {
 
     /// Enables the crypto-store cross-process lock.
     ///
-    /// This may be required if there are multiple processes that may do writes to the same crypto
-    /// store. In that case, it's necessary to create a lock, so that only one process writes to
-    /// it, otherwise this may cause confusing issues because of stale data contained in in-memory
+    /// This may be required if there are multiple processes that may do writes
+    /// to the same crypto store. In that case, it's necessary to create a
+    /// lock, so that only one process writes to it, otherwise this may
+    /// cause confusing issues because of stale data contained in in-memory
     /// caches.
     ///
     /// The provided `lock_value` must be a unique identifier for this process.
@@ -863,15 +864,17 @@ impl Encryption {
         Ok(())
     }
 
-    /// If a lock was created with [`Self::enable_cross_process_crypto_store_lock`], spin-waits
+    /// If a lock was created with
+    /// [`Self::enable_cross_process_crypto_store_lock`], spin-waits
     /// until the lock is available.
     ///
-    /// May reload the `OlmMachine`, after obtaining the lock but not on the first time.
+    /// May reload the `OlmMachine`, after obtaining the lock but not on the
+    /// first time.
     pub async fn spin_lock_store(&self, max_backoff: Option<u32>) -> Result<(), Error> {
         if let Some(lock) = self.client.inner.cross_process_crypto_store_lock.get() {
             if lock.try_lock_once().await?.not() {
-                // We didn't get the lock on the first attempt, so that means that another process
-                // is using it. Wait for it to release it.
+                // We didn't get the lock on the first attempt, so that means that another
+                // process is using it. Wait for it to release it.
                 lock.spin_lock(max_backoff).await?;
 
                 // As we didn't get the lock on the first attempt, force-reload all the crypto
@@ -887,7 +890,8 @@ impl Encryption {
         Ok(())
     }
 
-    /// If a lock was created with [`Self::enable_cross_process_crypto_store_lock`], attempts to
+    /// If a lock was created with
+    /// [`Self::enable_cross_process_crypto_store_lock`], attempts to
     /// lock it once.
     ///
     /// Returns whether the lock was obtained or not.
@@ -898,7 +902,8 @@ impl Encryption {
         Ok(false)
     }
 
-    /// If a lock was created with [`Self::enable_cross_process_crypto_store_lock`], unlocks it.
+    /// If a lock was created with
+    /// [`Self::enable_cross_process_crypto_store_lock`], unlocks it.
     ///
     /// This may return an error if we were not the lock's owner.
     pub async fn unlock_store(&self) -> Result<(), Error> {

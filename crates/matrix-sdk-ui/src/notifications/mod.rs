@@ -26,19 +26,20 @@
 //!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
 
-use std::sync::atomic::{AtomicI32, Ordering};
-
 use async_stream::stream;
 use futures_core::stream::Stream;
 use futures_util::{pin_mut, StreamExt};
 use matrix_sdk::{Client, SlidingSync};
-
 use matrix_sdk_crypto::CryptoStoreError;
 use ruma::{api::client::sync::sync_events::v4, assign};
 use tracing::error;
 
+#[derive(Clone, Copy)]
 pub enum NotificationSyncMode {
+    /// Run the loop for a fixed amount of iterations.
     RunFixedIterations(u8),
+
+    /// Never stop running the loop, except if asked to stop.
     NeverStop,
 }
 
@@ -48,7 +49,8 @@ pub enum NotificationSyncMode {
 pub struct NotificationSync {
     client: Client,
     sliding_sync: SlidingSync,
-    num_attempts: AtomicI32,
+    mode: NotificationSyncMode,
+    with_lock: bool,
 }
 
 impl NotificationSync {
@@ -60,8 +62,9 @@ impl NotificationSync {
     /// the risk of causing problems.
     pub async fn new(
         id: impl Into<String>,
-        mode: NotificationSyncMode,
         client: Client,
+        mode: NotificationSyncMode,
+        with_lock: bool,
     ) -> Result<Self, Error> {
         let id = id.into();
         let sliding_sync = client
@@ -74,24 +77,22 @@ impl NotificationSync {
             .build()
             .await?;
 
-        // Gently try to set the cross-process lock on behalf of the user.
-        match client.encryption().enable_cross_process_store_lock(id).await {
-            Ok(()) | Err(matrix_sdk::Error::BadCryptoStoreState) => {
-                // Ignore; we've already set the crypto store lock to something, and that's
-                // sufficient as long as it uniquely identifies the process.
-            }
-            Err(err) => {
-                // Any other error is fatal
-                return Err(Error::ClientError(err));
-            }
-        };
+        if with_lock {
+            // Gently try to set the cross-process lock on behalf of the user.
+            match client.encryption().enable_cross_process_store_lock(id).await {
+                Ok(()) | Err(matrix_sdk::Error::BadCryptoStoreState) => {
+                    // Ignore; we've already set the crypto store lock to
+                    // something, and that's sufficient as
+                    // long as it uniquely identifies the process.
+                }
+                Err(err) => {
+                    // Any other error is fatal
+                    return Err(Error::ClientError(err));
+                }
+            };
+        }
 
-        let num_attempts = match mode {
-            NotificationSyncMode::RunFixedIterations(val) => i32::from(val),
-            NotificationSyncMode::NeverStop => -1,
-        };
-
-        Ok(Self { client, sliding_sync, num_attempts: num_attempts.into() })
+        Ok(Self { client, sliding_sync, mode, with_lock })
     }
 
     /// Start synchronization of notifications.
@@ -104,25 +105,25 @@ impl NotificationSync {
 
             pin_mut!(sync);
 
+            let mut mode = self.mode;
+
             loop {
-                let num_attempts = self.num_attempts.load(Ordering::SeqCst);
-                if num_attempts == 0 {
-                    // If the previous attempt was the last one, stop now.
-                    break;
-                }
+                let must_unlock = match &mut mode {
+                    NotificationSyncMode::RunFixedIterations(ref mut val) => {
+                        if *val == 0 {
+                            // The previous attempt was the last one, stop now.
+                            break;
+                        }
+                        // Soon.
+                        *val -= 1;
 
-                if num_attempts > 0 {
-                    // If there's a finite number of attempt, decrement.
-                    self.num_attempts.store(num_attempts - 1, Ordering::SeqCst);
-                }
+                        self.with_lock && self.client.encryption().try_lock_store_once().await?
+                    }
 
-                let must_unlock = if num_attempts == -1 {
-                    // Notification process.
-                    self.client.encryption().try_lock_store_once().await?
-                } else {
-                    // Main process.
-                    self.client.encryption().spin_lock_store(Some(60000)).await?;
-                    true
+                    NotificationSyncMode::NeverStop => {
+                        self.client.encryption().spin_lock_store(Some(60000)).await?;
+                        true
+                    }
                 };
 
                 match sync.next().await {
@@ -160,6 +161,7 @@ impl NotificationSync {
                         if must_unlock {
                             self.client.encryption().unlock_store().await?;
                         }
+
                         break;
                     }
                 }

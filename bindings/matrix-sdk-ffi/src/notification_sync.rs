@@ -80,9 +80,12 @@ impl Client {
         id: String,
         listener: Box<dyn NotificationSyncListener>,
         mode: NotificationSyncMode,
+        with_lock: bool,
     ) -> Result<Arc<NotificationSync>, ClientError> {
         RUNTIME.block_on(async move {
-            let inner = Arc::new(MatrixNotificationSync::new(id, mode, self.inner.clone()).await?);
+            let inner = Arc::new(
+                MatrixNotificationSync::new(id, self.inner.clone(), mode, with_lock).await?,
+            );
 
             let handle = NotificationSync::start(inner.clone(), listener);
 
@@ -93,20 +96,43 @@ impl Client {
 
 #[uniffi::export]
 impl Client {
-    pub fn main_notification_sync(
+    /// Must be called to get the encryption loop running.
+    ///
+    /// `id` must be a unique identifier, less than 16 chars long, for the
+    /// current process. It must not change over time, as it's used as a key
+    /// for caching.
+    ///
+    /// If the process involves another process that handles notifications (like
+    /// on iOS), then `with_lock` must be set to true. Otherwise, it can be
+    /// false (like on Android).
+    pub fn main_encryption_loop(
         &self,
         id: String,
         listener: Box<dyn NotificationSyncListener>,
+        with_lock: bool,
     ) -> Result<Arc<NotificationSync>, ClientError> {
-        self.notification_sync(id, listener, NotificationSyncMode::NeverStop)
+        self.notification_sync(id, listener, NotificationSyncMode::NeverStop, with_lock)
     }
 
-    pub fn nse_notification_loop(
+    /// Encryption loop for a notification process.
+    ///
+    /// Requires that the main process also gets its own encryption sync, with
+    /// `with_lock` set to true.
+    ///
+    /// A fixed number of iterations can be given, to limit the time spent in
+    /// that loop.
+    pub fn notification_encryption_loop(
         &self,
         id: String,
         listener: Box<dyn NotificationSyncListener>,
         num_iters: u8,
     ) -> Result<Arc<NotificationSync>, ClientError> {
-        self.notification_sync(id, listener, NotificationSyncMode::RunFixedIterations(num_iters))
+        let with_lock = true;
+        self.notification_sync(
+            id,
+            listener,
+            NotificationSyncMode::RunFixedIterations(num_iters),
+            with_lock,
+        )
     }
 }
