@@ -12,16 +12,16 @@
 // See the License for that specific language governing permissions and
 // limitations under the License.
 
-//! Notification API.
+//! Encryption Sync API.
 //!
-//! The notification API is a high-level helper that is designed to take care of
-//! handling the synchronization of notifications, be they received within the
-//! app or within a dedicated notification process (e.g. the [NSE] process on
-//! iOS devices).
+//! The encryption sync API is a high-level helper that is designed to take care
+//! of handling the synchronization of encryption and to-device events (required
+//! for encryption), be they received within the app or within a dedicated
+//! extension process (e.g. the [NSE] process on iOS devices).
 //!
 //! Under the hood, this uses a sliding sync instance configured with no lists,
 //! but that enables the e2ee and to-device extensions, so that it can both
-//! handle encryption et manage encryption keys; that's sufficient to decrypt
+//! handle encryption and manage encryption keys; that's sufficient to decrypt
 //! messages received in the notification processes.
 //!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
@@ -37,7 +37,7 @@ use ruma::{api::client::sync::sync_events::v4, assign};
 use tracing::error;
 
 #[derive(Clone, Copy)]
-pub enum NotificationSyncMode {
+pub enum EncryptionSyncMode {
     /// Run the loop for a fixed amount of iterations.
     RunFixedIterations(u8),
 
@@ -45,18 +45,18 @@ pub enum NotificationSyncMode {
     NeverStop,
 }
 
-/// High-level helper for synchronizing notifications using sliding sync.
+/// High-level helper for synchronizing encryption events using sliding sync.
 ///
 /// See the module's documentation for more details.
-pub struct NotificationSync {
+pub struct EncryptionSync {
     client: Client,
     sliding_sync: SlidingSync,
-    mode: NotificationSyncMode,
+    mode: EncryptionSyncMode,
     with_lock: bool,
 }
 
-impl NotificationSync {
-    /// Creates a new instance of a `NotificationSync`.
+impl EncryptionSync {
+    /// Creates a new instance of a `EncryptionSync`.
     ///
     /// This will create and manage an instance of [`matrix_sdk::SlidingSync`].
     /// The `id` is used as the identifier of that instance, as such make
@@ -65,7 +65,7 @@ impl NotificationSync {
     pub async fn new(
         id: impl Into<String>,
         client: Client,
-        mode: NotificationSyncMode,
+        mode: EncryptionSyncMode,
         with_lock: bool,
     ) -> Result<Self, Error> {
         let id = id.into();
@@ -77,7 +77,7 @@ impl NotificationSync {
             )
             .with_e2ee_extension(assign!(v4::E2EEConfig::default(), { enabled: Some(true)}));
 
-        if matches!(mode, NotificationSyncMode::RunFixedIterations(..)) {
+        if matches!(mode, EncryptionSyncMode::RunFixedIterations(..)) {
             builder = builder.with_timeouts(Duration::from_secs(4), Duration::from_secs(4));
         }
 
@@ -101,10 +101,9 @@ impl NotificationSync {
         Ok(Self { client, sliding_sync, mode, with_lock })
     }
 
-    /// Start synchronization of notifications.
+    /// Start synchronization.
     ///
-    /// This should be regularly polled, so as to ensure that the notifications
-    /// are sync'd.
+    /// This should be regularly polled.
     pub fn sync(&self) -> impl Stream<Item = Result<(), Error>> + '_ {
         stream!({
             let sync = self.sliding_sync.sync();
@@ -115,7 +114,7 @@ impl NotificationSync {
 
             loop {
                 let must_unlock = match &mut mode {
-                    NotificationSyncMode::RunFixedIterations(ref mut val) => {
+                    EncryptionSyncMode::RunFixedIterations(ref mut val) => {
                         if *val == 0 {
                             // The previous attempt was the last one, stop now.
                             break;
@@ -126,7 +125,7 @@ impl NotificationSync {
                         self.with_lock && self.client.encryption().try_lock_store_once().await?
                     }
 
-                    NotificationSyncMode::NeverStop => {
+                    EncryptionSyncMode::NeverStop => {
                         self.client.encryption().spin_lock_store(Some(60000)).await?;
                         true
                     }
@@ -137,10 +136,10 @@ impl NotificationSync {
                         // This API is only concerned with the e2ee and to-device extensions.
                         // Warn if anything weird has been received from the proxy.
                         if !update_summary.lists.is_empty() {
-                            error!(?update_summary.lists, "unexpected non-empty list of lists in notification API");
+                            error!(?update_summary.lists, "unexpected non-empty list of lists in encryption sync API");
                         }
                         if !update_summary.rooms.is_empty() {
-                            error!(?update_summary.rooms, "unexpected non-empty list of rooms in notification API");
+                            error!(?update_summary.rooms, "unexpected non-empty list of rooms in encryption sync API");
                         }
 
                         if must_unlock {
@@ -184,7 +183,7 @@ impl NotificationSync {
     }
 }
 
-/// Errors for the [`NotificationSync`].
+/// Errors for the [`EncryptionSync`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Something wrong happened in sliding sync: {0:#}")]

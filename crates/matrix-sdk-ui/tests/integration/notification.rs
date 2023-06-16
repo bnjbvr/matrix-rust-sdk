@@ -1,18 +1,18 @@
 use futures_util::{pin_mut, StreamExt as _};
 use matrix_sdk_test::async_test;
-use matrix_sdk_ui::notifications::{NotificationSync, NotificationSyncMode};
+use matrix_sdk_ui::notifications::{EncryptionSync, EncryptionSyncMode};
 
 use crate::{logged_in_client, sliding_sync_then_assert_request_and_fake_response};
 
 #[async_test]
-async fn test_smoke_test_notification_api() -> anyhow::Result<()> {
+async fn test_smoke_encryption_sync_works() -> anyhow::Result<()> {
     for with_lock in [true, false] {
         let (client, server) = logged_in_client().await;
 
-        let notification_api = NotificationSync::new(
+        let notification_api = EncryptionSync::new(
             "notifs".to_owned(),
             client,
-            NotificationSyncMode::NeverStop,
+            EncryptionSyncMode::NeverStop,
             with_lock,
         )
         .await?;

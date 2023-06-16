@@ -1,15 +1,13 @@
 use std::sync::Arc;
 
 use futures_util::{pin_mut, StreamExt as _};
-use matrix_sdk_ui::notifications::{
-    NotificationSync as MatrixNotificationSync, NotificationSyncMode,
-};
+use matrix_sdk_ui::notifications::{EncryptionSync as MatrixEncryptionSync, EncryptionSyncMode};
 use tracing::{error, info, warn};
 
 use crate::{client::Client, error::ClientError, task_handle::TaskHandle, RUNTIME};
 
 #[uniffi::export(callback_interface)]
-pub trait NotificationSyncListener: Sync + Send {
+pub trait EncryptionSyncListener: Sync + Send {
     /// Called whenever the notification sync loop terminates, and must be
     /// restarted.
     fn did_terminate(&self);
@@ -17,17 +15,17 @@ pub trait NotificationSyncListener: Sync + Send {
 
 /// Full context for the notification sync loop.
 #[derive(uniffi::Object)]
-pub struct NotificationSync {
+pub struct EncryptionSync {
     /// Unused field, maintains the sliding sync loop alive.
     _handle: TaskHandle,
 
-    sync: Arc<MatrixNotificationSync>,
+    sync: Arc<MatrixEncryptionSync>,
 }
 
-impl NotificationSync {
+impl EncryptionSync {
     fn start(
-        notification: Arc<MatrixNotificationSync>,
-        listener: Box<dyn NotificationSyncListener>,
+        notification: Arc<MatrixEncryptionSync>,
+        listener: Box<dyn EncryptionSyncListener>,
     ) -> TaskHandle {
         TaskHandle::new(RUNTIME.spawn(async move {
             let stream = notification.sync();
@@ -66,7 +64,7 @@ impl NotificationSync {
 }
 
 #[uniffi::export]
-impl NotificationSync {
+impl EncryptionSync {
     pub fn stop(&self) {
         if let Err(err) = self.sync.stop() {
             error!("Error when stopping the notification sync: {err}");
@@ -75,21 +73,20 @@ impl NotificationSync {
 }
 
 impl Client {
-    fn notification_sync(
+    fn encryption_sync(
         &self,
         id: String,
-        listener: Box<dyn NotificationSyncListener>,
-        mode: NotificationSyncMode,
+        listener: Box<dyn EncryptionSyncListener>,
+        mode: EncryptionSyncMode,
         with_lock: bool,
-    ) -> Result<Arc<NotificationSync>, ClientError> {
+    ) -> Result<Arc<EncryptionSync>, ClientError> {
         RUNTIME.block_on(async move {
-            let inner = Arc::new(
-                MatrixNotificationSync::new(id, self.inner.clone(), mode, with_lock).await?,
-            );
+            let inner =
+                Arc::new(MatrixEncryptionSync::new(id, self.inner.clone(), mode, with_lock).await?);
 
-            let handle = NotificationSync::start(inner.clone(), listener);
+            let handle = EncryptionSync::start(inner.clone(), listener);
 
-            Ok(Arc::new(NotificationSync { _handle: handle, sync: inner }))
+            Ok(Arc::new(EncryptionSync { _handle: handle, sync: inner }))
         })
     }
 }
@@ -105,13 +102,13 @@ impl Client {
     /// If the process involves another process that handles notifications (like
     /// on iOS), then `with_lock` must be set to true. Otherwise, it can be
     /// false (like on Android).
-    pub fn main_encryption_loop(
+    pub fn main_encryption_sync(
         &self,
         id: String,
-        listener: Box<dyn NotificationSyncListener>,
+        listener: Box<dyn EncryptionSyncListener>,
         with_lock: bool,
-    ) -> Result<Arc<NotificationSync>, ClientError> {
-        self.notification_sync(id, listener, NotificationSyncMode::NeverStop, with_lock)
+    ) -> Result<Arc<EncryptionSync>, ClientError> {
+        self.encryption_sync(id, listener, EncryptionSyncMode::NeverStop, with_lock)
     }
 
     /// Encryption loop for a notification process.
@@ -121,17 +118,17 @@ impl Client {
     ///
     /// A fixed number of iterations can be given, to limit the time spent in
     /// that loop.
-    pub fn notification_encryption_loop(
+    pub fn notification_encryption_sync(
         &self,
         id: String,
-        listener: Box<dyn NotificationSyncListener>,
+        listener: Box<dyn EncryptionSyncListener>,
         num_iters: u8,
-    ) -> Result<Arc<NotificationSync>, ClientError> {
+    ) -> Result<Arc<EncryptionSync>, ClientError> {
         let with_lock = true;
-        self.notification_sync(
+        self.encryption_sync(
             id,
             listener,
-            NotificationSyncMode::RunFixedIterations(num_iters),
+            EncryptionSyncMode::RunFixedIterations(num_iters),
             with_lock,
         )
     }
