@@ -24,10 +24,6 @@
 //! handle encryption et manage encryption keys; that's sufficient to decrypt
 //! messages received in the notification processes.
 //!
-//! As this may be used across different processes, this also makes sure that
-//! there's only one process writing to the databases holding encryption
-//! information. TODO as of 2023-06-06, this hasn't been done yet.
-//!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
 
 use std::{
@@ -45,7 +41,7 @@ use ruma::{api::client::sync::sync_events::v4, assign};
 use tracing::error;
 
 pub enum NotificationSyncMode {
-    RunFixedAttempts(u8),
+    RunFixedIterations(u8),
     NeverStop,
 }
 
@@ -89,7 +85,7 @@ impl NotificationSync {
             .map_err(|_| Error::AuthenticationRequired)?;
 
         let num_attempts = match mode {
-            NotificationSyncMode::RunFixedAttempts(val) => i32::from(val),
+            NotificationSyncMode::RunFixedIterations(val) => i32::from(val),
             NotificationSyncMode::NeverStop => -1,
         };
 
@@ -126,6 +122,15 @@ impl NotificationSync {
 
                 // Try to obtain the cross-process lock.
                 if self.cross_process_lock.try_lock_once().await?.not() {
+                    // HACK: this conditional is a way to recognize the NSE loop; need a better
+                    // API for that.
+                    if num_attempts != -1 {
+                        // If we're in a notification process, and the lock is already taken, then
+                        // the main app is running, and we let it do its work.
+                        // TODO The embedder is expected to retry, in that case, but they can't be notified of it?
+                        return;
+                    }
+
                     // We didn't get the lock on the first time, so that means that another process
                     // is using it. Wait for it to release it.
                     self.cross_process_lock.spin_lock(Some(10000)).await?;
@@ -183,9 +188,10 @@ impl NotificationSync {
     }
 
     pub async fn stop(&self) -> Result<(), Error> {
-        self.sliding_sync.stop_sync()?;
+        // Stopping the sync loop will cause the next `next()` call to return `None`, so this will
+        // also release the cross-process lock automatically.
 
-        self.cross_process_lock.maybe_unlock().await?;
+        self.sliding_sync.stop_sync()?;
 
         Ok(())
     }

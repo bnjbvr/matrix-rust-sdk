@@ -122,6 +122,6 @@ impl Client {
         listener: Box<dyn NotificationSyncListener>,
         num_iters: u8,
     ) -> Result<Arc<NotificationSync>, ClientError> {
-        self.notification_sync(id, listener, NotificationSyncMode::RunFixedAttempts(num_iters))
+        self.notification_sync(id, listener, NotificationSyncMode::RunFixedIterations(num_iters))
     }
 }
