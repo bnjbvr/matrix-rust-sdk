@@ -26,6 +26,8 @@
 //!
 //! [NSE]: https://developer.apple.com/documentation/usernotifications/unnotificationserviceextension
 
+use std::time::Duration;
+
 use async_stream::stream;
 use futures_core::stream::Stream;
 use futures_util::{pin_mut, StreamExt};
@@ -67,15 +69,19 @@ impl NotificationSync {
         with_lock: bool,
     ) -> Result<Self, Error> {
         let id = id.into();
-        let sliding_sync = client
+        let mut builder = client
             .sliding_sync(id.clone())?
             .enable_caching()?
             .with_to_device_extension(
                 assign!(v4::ToDeviceConfig::default(), { enabled: Some(true)}),
             )
-            .with_e2ee_extension(assign!(v4::E2EEConfig::default(), { enabled: Some(true)}))
-            .build()
-            .await?;
+            .with_e2ee_extension(assign!(v4::E2EEConfig::default(), { enabled: Some(true)}));
+
+        if matches!(mode, NotificationSyncMode::RunFixedIterations(..)) {
+            builder = builder.with_timeouts(Duration::from_secs(4), Duration::from_secs(4));
+        }
+
+        let sliding_sync = builder.build().await?;
 
         if with_lock {
             // Gently try to set the cross-process lock on behalf of the user.
