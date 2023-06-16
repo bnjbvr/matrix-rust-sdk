@@ -4,7 +4,7 @@ use futures_util::{pin_mut, StreamExt as _};
 use matrix_sdk_ui::notifications::{
     NotificationSync as MatrixNotificationSync, NotificationSyncMode,
 };
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::{client::Client, error::ClientError, task_handle::TaskHandle, RUNTIME};
 
@@ -21,14 +21,13 @@ pub struct NotificationSync {
     /// Unused field, maintains the sliding sync loop alive.
     _handle: TaskHandle,
 
-    internal_channel_sender: tokio::sync::mpsc::Sender<()>,
+    sync: Arc<MatrixNotificationSync>,
 }
 
 impl NotificationSync {
     fn start(
-        notification: MatrixNotificationSync,
+        notification: Arc<MatrixNotificationSync>,
         listener: Box<dyn NotificationSyncListener>,
-        mut internal_channel_receiver: tokio::sync::mpsc::Receiver<()>,
     ) -> TaskHandle {
         TaskHandle::new(RUNTIME.spawn(async move {
             let stream = notification.sync();
@@ -38,16 +37,6 @@ impl NotificationSync {
                 tokio::select! {
                     biased;
 
-                    _ = internal_channel_receiver.recv() => {
-                        // Abort the notification sync.
-                        if let Err(err) = notification.stop().await {
-                            error!("Error when shutting down the notification sync loop: {err}");
-                        }
-
-                        // Exit the loop.
-                        break;
-                    }
-
                     streamed = stream.next() => {
                         match streamed {
                             Some(Ok(())) => {
@@ -55,7 +44,7 @@ impl NotificationSync {
                             }
 
                             None => {
-                                warn!("Notification sliding sync ended");
+                                info!("Notification sliding sync ended");
                                 break;
                             }
 
@@ -79,11 +68,9 @@ impl NotificationSync {
 #[uniffi::export]
 impl NotificationSync {
     pub fn stop(&self) {
-        RUNTIME.block_on(async {
-            if let Err(err) = self.internal_channel_sender.send(()).await {
-                error!("Error when requesting to stop notification sync: {err}");
-            }
-        });
+        if let Err(err) = self.sync.stop() {
+            error!("Error when stopping the notification sync: {err}");
+        }
     }
 }
 
@@ -95,13 +82,11 @@ impl Client {
         mode: NotificationSyncMode,
     ) -> Result<Arc<NotificationSync>, ClientError> {
         RUNTIME.block_on(async move {
-            let inner = MatrixNotificationSync::new(id, mode, self.inner.clone()).await?;
+            let inner = Arc::new(MatrixNotificationSync::new(id, mode, self.inner.clone()).await?);
 
-            let (sender, receiver) = tokio::sync::mpsc::channel(8);
+            let handle = NotificationSync::start(inner.clone(), listener);
 
-            let handle = NotificationSync::start(inner, listener, receiver);
-
-            Ok(Arc::new(NotificationSync { _handle: handle, internal_channel_sender: sender }))
+            Ok(Arc::new(NotificationSync { _handle: handle, sync: inner }))
         })
     }
 }

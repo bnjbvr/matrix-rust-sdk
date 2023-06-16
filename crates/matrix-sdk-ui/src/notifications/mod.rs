@@ -127,7 +127,8 @@ impl NotificationSync {
                     if num_attempts != -1 {
                         // If we're in a notification process, and the lock is already taken, then
                         // the main app is running, and we let it do its work.
-                        // TODO The embedder is expected to retry, in that case, but they can't be notified of it?
+                        // TODO The embedder is expected to retry, in that case, but they can't be
+                        // notified of it?
                         return;
                     }
 
@@ -187,10 +188,9 @@ impl NotificationSync {
         })
     }
 
-    pub async fn stop(&self) -> Result<(), Error> {
-        // Stopping the sync loop will cause the next `next()` call to return `None`, so this will
-        // also release the cross-process lock automatically.
-
+    pub fn stop(&self) -> Result<(), Error> {
+        // Stopping the sync loop will cause the next `next()` call to return `None`, so
+        // this will also release the cross-process lock automatically.
         self.sliding_sync.stop_sync()?;
 
         Ok(())
