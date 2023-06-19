@@ -40,10 +40,11 @@ pub struct CryptoStoreLock {
 
     /// Number of holders of the lock in this process.
     ///
-    /// If greater than 0, this means we've already acquired this lock, in this process, and the
-    /// store lock mustn't be touched.
+    /// If greater than 0, this means we've already acquired this lock, in this
+    /// process, and the store lock mustn't be touched.
     ///
-    /// When the number of holders is decreased to 0, then the lock must be released in the store.
+    /// When the number of holders is decreased to 0, then the lock must be
+    /// released in the store.
     num_holders: Arc<Mutex<u32>>,
 
     /// The key used in the key/value mapping for the lock entry.
@@ -84,12 +85,12 @@ impl CryptoStoreLock {
 
     /// Try to lock once, returns whether the lock was obtained or not.
     pub async fn try_lock_once(&self) -> Result<bool, CryptoStoreError> {
-        // Hold the num_holders lock for the entire's function lifetime, to avoid internal races
-        // if called in a reentrant manner.
+        // Hold the num_holders lock for the entire's function lifetime, to avoid
+        // internal races if called in a reentrant manner.
         let mut holders = self.num_holders.lock().await;
 
-        // If another thread obtained the lock, make sure to only superficially increase the
-        // number of holders, and carry on.
+        // If another thread obtained the lock, make sure to only superficially increase
+        // the number of holders, and carry on.
         if *holders > 0 {
             *holders += 1;
             return Ok(true);
@@ -132,8 +133,8 @@ impl CryptoStoreLock {
     pub async fn spin_lock(&self, max_backoff: Option<u32>) -> Result<(), CryptoStoreError> {
         let max_backoff = max_backoff.unwrap_or(Self::MAX_BACKOFF_MS);
 
-        // Note: reads/writes to the backoff are racy across threads in theory, but the lock in
-        // `try_lock_once` should sequentialize it all.
+        // Note: reads/writes to the backoff are racy across threads in theory, but the
+        // lock in `try_lock_once` should sequentialize it all.
 
         loop {
             if self.try_lock_once().await? {
@@ -169,8 +170,8 @@ impl CryptoStoreLock {
     ///
     /// Will return an error if the lock wasn't taken.
     pub async fn unlock(&self) -> Result<(), CryptoStoreError> {
-        // Keep the lock for the whole's function lifetime, to avoid races with other threads
-        // trying to acquire/release  the lock at the same time.
+        // Keep the lock for the whole's function lifetime, to avoid races with other
+        // threads trying to acquire/release  the lock at the same time.
         let mut holders = self.num_holders.lock().await;
 
         assert!(*holders > 0);

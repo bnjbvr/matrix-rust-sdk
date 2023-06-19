@@ -1,6 +1,6 @@
 use futures_util::{pin_mut, StreamExt as _};
 use matrix_sdk_test::async_test;
-use matrix_sdk_ui::notifications::{EncryptionSync, EncryptionSyncMode};
+use matrix_sdk_ui::encryption_sync::{EncryptionSync, EncryptionSyncMode};
 
 use crate::{logged_in_client, sliding_sync_then_assert_request_and_fake_response};
 
