@@ -38,8 +38,13 @@ pub struct CryptoStoreLock {
     /// The store we're using to lock.
     store: Arc<DynCryptoStore>,
 
-    /// Small cache whether the lock is hold by this process.
-    is_locked: Arc<Mutex<bool>>,
+    /// Number of holders of the lock in this process.
+    ///
+    /// If greater than 0, this means we've already acquired this lock, in this process, and the
+    /// store lock mustn't be touched.
+    ///
+    /// When the number of holders is decreased to 0, then the lock must be released in the store.
+    num_holders: Arc<Mutex<u32>>,
 
     /// The key used in the key/value mapping for the lock entry.
     lock_key: String,
@@ -73,17 +78,21 @@ impl CryptoStoreLock {
             lock_key,
             lock_holder,
             backoff: Arc::new(Mutex::new(Self::INITIAL_BACKOFF_MS)),
-            is_locked: Arc::new(Mutex::new(false)),
+            num_holders: Arc::new(Mutex::new(0)),
         }
     }
 
     /// Try to lock once, returns whether the lock was obtained or not.
     pub async fn try_lock_once(&self) -> Result<bool, CryptoStoreError> {
-        {
-            let is_locked = *self.is_locked.lock().await;
-            if is_locked {
-                return Ok(true);
-            }
+        // Hold the num_holders lock for the entire's function lifetime, to avoid internal races
+        // if called in a reentrant manner.
+        let mut holders = self.num_holders.lock().await;
+
+        // If another thread obtained the lock, make sure to only superficially increase the
+        // number of holders, and carry on.
+        if *holders > 0 {
+            *holders += 1;
+            return Ok(true);
         }
 
         let inserted = self
@@ -92,7 +101,7 @@ impl CryptoStoreLock {
             .await?;
 
         if inserted {
-            *self.is_locked.lock().await = true;
+            *holders += 1;
             return Ok(true);
         }
 
@@ -100,18 +109,15 @@ impl CryptoStoreLock {
         // lock, and forgot to release it; in that case, we *still* hold it.
         let previous = self.store.get_custom_value(&self.lock_key).await?;
         if previous.as_deref() == Some(self.lock_holder.as_bytes()) {
-            // At this point, the only possible value for backoff is the initial one, but
-            // better be safe than sorry.
             tracing::warn!(
                 "Crypto-store lock {} was already taken by {}; let's pretend we just acquired it.",
                 self.lock_key,
                 self.lock_holder
             );
-            *self.is_locked.lock().await = true;
+            *holders += 1;
             return Ok(true);
         }
 
-        *self.is_locked.lock().await = false;
         Ok(false)
     }
 
@@ -125,6 +131,9 @@ impl CryptoStoreLock {
     /// will wait for [`Self::MAX_BACKOFF_MS`].
     pub async fn spin_lock(&self, max_backoff: Option<u32>) -> Result<(), CryptoStoreError> {
         let max_backoff = max_backoff.unwrap_or(Self::MAX_BACKOFF_MS);
+
+        // Note: reads/writes to the backoff are racy across threads in theory, but the lock in
+        // `try_lock_once` should sequentialize it all.
 
         loop {
             if self.try_lock_once().await? {
@@ -160,6 +169,19 @@ impl CryptoStoreLock {
     ///
     /// Will return an error if the lock wasn't taken.
     pub async fn unlock(&self) -> Result<(), CryptoStoreError> {
+        // Keep the lock for the whole's function lifetime, to avoid races with other threads
+        // trying to acquire/release  the lock at the same time.
+        let mut holders = self.num_holders.lock().await;
+
+        assert!(*holders > 0);
+        if *holders > 1 {
+            // There's at least one other holder, so just decrease the number of holders.
+            *holders -= 1;
+            return Ok(());
+        }
+
+        // Here, holders == 1.
+
         let read = self
             .store
             .get_custom_value(&self.lock_key)
@@ -172,7 +194,7 @@ impl CryptoStoreLock {
 
         let removed = self.store.remove_custom_value(&self.lock_key).await?;
         if removed {
-            *self.is_locked.lock().await = false;
+            *holders -= 1;
             Ok(())
         } else {
             Err(LockStoreError::MissingLockValue.into())
