@@ -151,6 +151,8 @@ impl EncryptionSync {
                             error!(?update_summary.rooms, "unexpected non-empty list of rooms in encryption sync API");
                         }
 
+                        tracing::debug!("Encryption sync received an update!");
+
                         self.client.encryption().unlock_store().await?;
 
                         // Cool cool, let's do it again.
