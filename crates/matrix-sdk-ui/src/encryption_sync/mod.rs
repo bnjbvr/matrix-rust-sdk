@@ -109,6 +109,7 @@ impl EncryptionSync {
             pin_mut!(sync);
 
             let mut mode = self.mode;
+            let mut num_iter = 0;
 
             loop {
                 match &mut mode {
@@ -136,6 +137,9 @@ impl EncryptionSync {
                     }
                 };
 
+                tracing::debug!("Encryption sync iter#{num_iter}");
+                num_iter += 1;
+
                 match sync.next().await {
                     Some(Ok(update_summary)) => {
                         // This API is only concerned with the e2ee and to-device extensions.
@@ -158,12 +162,14 @@ impl EncryptionSync {
                     Some(Err(err)) => {
                         self.client.encryption().unlock_store().await?;
 
+                        tracing::error!("Error in encryption sync iteration. {err:#}");
                         yield Err(err.into());
 
                         break;
                     }
 
                     None => {
+                        tracing::debug!("Encryption sync's Sliding Sync was stopped.");
                         self.client.encryption().unlock_store().await?;
 
                         break;
@@ -179,6 +185,7 @@ impl EncryptionSync {
     pub fn stop(&self) -> Result<(), Error> {
         // Stopping the sync loop will cause the next `next()` call to return `None`, so
         // this will also release the cross-process lock automatically.
+        tracing::debug!("Encryption sync: requesting to stop Sliding Sync");
         self.sliding_sync.stop_sync()?;
 
         Ok(())
@@ -189,6 +196,8 @@ impl EncryptionSync {
     /// This must be called every time the process running this loop was suspended and got back
     /// into the foreground.
     pub async fn reload_caches(&self) -> Result<(), Error> {
+        tracing::debug!("Encryption sync: reloading caches");
+
         // Regenerate the crypto store caches first.
         self.client.encryption().reload_caches().await?;
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use futures_util::{pin_mut, StreamExt as _};
 use matrix_sdk_ui::encryption_sync::{EncryptionSync as MatrixEncryptionSync, EncryptionSyncMode};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{client::Client, error::ClientError, task_handle::TaskHandle, RUNTIME};
 
@@ -39,6 +39,7 @@ impl EncryptionSync {
                         match streamed {
                             Some(Ok(())) => {
                                 // Yay.
+                                debug!("Notification sliding sync successful iteration.");
                             }
 
                             None => {

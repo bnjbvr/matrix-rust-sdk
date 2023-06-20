@@ -94,8 +94,10 @@ impl CryptoStoreLock {
     }
 
     /// Try to lock once, returns whether the lock was obtained or not.
-    #[instrument(level = "DEBUG", skip(self), fields(?self.lock_key, ?self.lock_holder))]
+    #[instrument(skip(self), fields(?self.lock_key, ?self.lock_holder))]
     pub async fn try_lock_once(&self) -> Result<bool, CryptoStoreError> {
+        tracing::debug!("Trying to acquire lock.");
+
         // Hold the num_holders lock for the entire's function lifetime, to avoid
         // internal races if called in a reentrant manner.
         let mut holders = self.num_holders.lock().await;
@@ -103,6 +105,7 @@ impl CryptoStoreLock {
         // If another thread obtained the lock, make sure to only superficially increase
         // the number of holders, and carry on.
         if *holders > 0 {
+            tracing::debug!("Lock obtained: already acquired by this process.");
             *holders += 1;
             return Ok(true);
         }
@@ -113,6 +116,7 @@ impl CryptoStoreLock {
             .await?;
 
         if inserted {
+            tracing::debug!("Lock obtained: successful write in the DB.");
             *holders += 1;
             return Ok(true);
         }
@@ -131,7 +135,7 @@ impl CryptoStoreLock {
         }
 
         if let Some(prev_holder) = previous {
-            tracing::trace!("Lock is already taken by {}", String::from_utf8_lossy(&prev_holder));
+            tracing::debug!("Lock is already taken by {}", String::from_utf8_lossy(&prev_holder));
         }
 
         Ok(false)
@@ -145,7 +149,7 @@ impl CryptoStoreLock {
     /// reached a second time, the lock will stop attempting to get the lock
     /// and will return a timeout error upon locking. If not provided,
     /// will wait for [`Self::MAX_BACKOFF_MS`].
-    #[instrument(level = "DEBUG", skip(self), fields(?self.lock_key, ?self.lock_holder))]
+    #[instrument(skip(self), fields(?self.lock_key, ?self.lock_holder))]
     pub async fn spin_lock(&self, max_backoff: Option<u32>) -> Result<(), CryptoStoreError> {
         let max_backoff = max_backoff.unwrap_or(Self::MAX_BACKOFF_MS);
 
