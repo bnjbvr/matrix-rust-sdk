@@ -668,7 +668,7 @@ impl SlidingSync {
             // In case the task running this future is detached, we must
             // ensure responses are handled one at a time, hence we lock the
             // `response_handling_lock`.
-            let response_handling_lock = this.inner.response_handling_lock.lock().await;
+            //let response_handling_lock = this.inner.response_handling_lock.lock().await;
 
             debug!("Obtained the response_handling_lock, validating unsub");
 
@@ -696,7 +696,7 @@ impl SlidingSync {
 
             // Release the response handling lock.
             // It means that other responses can be handled.
-            drop(response_handling_lock);
+            //drop(response_handling_lock);
 
             debug!("Done handling response");
 
