@@ -309,6 +309,7 @@ impl SlidingSync {
 
         // Compute `limited`.
         {
+            debug!("compute limited");
             let known_rooms = self.inner.rooms.read().await;
             compute_limited(&known_rooms, &mut sliding_sync_response.rooms);
         }
@@ -324,6 +325,7 @@ impl SlidingSync {
 
         #[cfg(feature = "e2e-encryption")]
         if self.is_e2ee_enabled() {
+            debug!("process e2ee response");
             response_processor.handle_encryption(&sliding_sync_response.extensions).await?
         }
 
@@ -334,14 +336,17 @@ impl SlidingSync {
         //
         // NOTE: SS proxy workaround.
         if self.must_process_rooms_response().await {
+            debug!("process room response");
             response_processor.handle_room_response(&sliding_sync_response).await?;
         }
 
+        debug!("run actual processing");
         let mut sync_response = response_processor.process_and_take_response().await?;
 
         debug!(?sync_response, "Sliding Sync response has been handled by the client");
 
         // Commit sticky parameters, if needed.
+        debug!("commit sticky parameters");
         if let Some(ref txn_id) = sliding_sync_response.txn_id {
             let txn_id = txn_id.as_str().into();
             self.inner.sticky.write().unwrap().maybe_commit(txn_id);
@@ -349,6 +354,7 @@ impl SlidingSync {
             lists.values_mut().for_each(|list| list.maybe_commit_sticky(txn_id));
         }
 
+        debug!("creating update summary");
         let update_summary = {
             // Update the rooms.
             let updated_rooms = {
@@ -427,20 +433,25 @@ impl SlidingSync {
         // Everything went well, we can update the position markers.
         //
         // Save the new position markers.
+        debug!("overwriting guarded position");
         position_guard.pos = pos;
         position_guard.delta_token = sliding_sync_response.delta_token.clone();
 
         // Keep this position markers in memory, in case it pops from the server.
+        debug!("overwriting past positions");
         let mut past_positions = self.inner.past_positions.write().unwrap();
         past_positions.push(position_guard.clone());
 
         // Release the position markers lock.
         // It means that other requests can start to be sent.
+        debug!("releasing position guard");
         drop(position_guard);
 
+        debug!("and done!");
         Ok(update_summary)
     }
 
+    #[instrument(skip_all)]
     async fn generate_sync_request(
         &self,
         txn_id: &mut LazyTransactionId,
@@ -451,6 +462,7 @@ impl SlidingSync {
         OwnedMutexGuard<SlidingSyncPositionMarkers>,
     )> {
         // Collect requests for lists.
+        debug!("starting to generate request");
         let mut requests_lists = BTreeMap::new();
 
         {
@@ -461,6 +473,8 @@ impl SlidingSync {
             }
         }
 
+        debug!("done generating requests_lists, awaiting the position lock...");
+
         // Collect the `pos` and `delta_token`.
         //
         // Wait on the `position` mutex to be available. It means no request nor
@@ -469,13 +483,18 @@ impl SlidingSync {
         // the response handling has failed, in this case the `pos` hasn't been updated
         // and the same `pos` will be used for this new request.
         let position_guard = self.inner.position.clone().lock_owned().await;
+
+        debug!("got the position lock!");
+
         let pos = position_guard.pos.clone();
         let delta_token = position_guard.delta_token.clone();
 
         Span::current().record("pos", &pos);
 
         // Collect other data.
+        debug!("waiting for room unsub");
         let room_unsubscriptions = self.inner.room_unsubscriptions.read().unwrap().clone();
+        debug!("got room unsub");
 
         let mut request = assign!(v4::Request::new(), {
             conn_id: Some(self.inner.id.clone()),
@@ -486,6 +505,8 @@ impl SlidingSync {
             unsubscribe_rooms: room_unsubscriptions.iter().cloned().collect(),
         });
 
+        debug!("made initial request, generating sticky");
+
         let to_device_enabled = {
             let mut sticky_params = self.inner.sticky.write().unwrap();
 
@@ -494,9 +515,15 @@ impl SlidingSync {
             sticky_params.data().extensions.to_device.enabled == Some(true)
         };
 
+        debug!("done with sticky");
+
         // Set the to_device token if the extension is enabled.
         if to_device_enabled {
+            debug!("generating to-device section");
+
             let lists = self.inner.lists.read().await;
+
+            debug!("> obtained lists lock, restoring token from disk");
 
             let mut to_device_token = None;
             restore_sliding_sync_state(
@@ -509,12 +536,15 @@ impl SlidingSync {
             .await?;
 
             request.extensions.to_device.since = to_device_token;
+            debug!("done generating to-device section");
         }
 
         // Apply the transaction id if one was generated.
         if let Some(txn_id) = txn_id.get() {
             request.txn_id = Some(txn_id.to_string());
         }
+
+        debug!("done generating request");
 
         Ok((
             // The request itself.
@@ -633,12 +663,14 @@ impl SlidingSync {
         // Spawn a new future to ensure that the code inside this future cannot be
         // cancelled if this method is cancelled.
         let future = async move {
-            debug!("Start handling response");
+            debug!("Start handling response, waiting for lock");
 
             // In case the task running this future is detached, we must
             // ensure responses are handled one at a time, hence we lock the
             // `response_handling_lock`.
             let response_handling_lock = this.inner.response_handling_lock.lock().await;
+
+            debug!("Obtained the response_handling_lock, validating unsub");
 
             // Room unsubscriptions have been received by the server. We can update the
             // unsubscriptions buffer. However, it would be an error to empty it entirely as
@@ -651,10 +683,16 @@ impl SlidingSync {
                     .retain(|room_id| !requested_room_unsubscriptions.contains(room_id));
             }
 
+            debug!("Validated unsub, handling full response");
+
             // Handle the response.
             let updates = this.handle_response(response, position_guard).await?;
 
+            debug!("handle_response is done, caching tokens to storage");
+
             this.cache_to_storage().await?;
+
+            debug!("caching done, releasing lock");
 
             // Release the response handling lock.
             // It means that other responses can be handled.
