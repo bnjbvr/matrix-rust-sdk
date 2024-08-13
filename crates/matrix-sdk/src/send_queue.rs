@@ -1019,6 +1019,9 @@ impl QueueStorage {
             .map_err(RoomSendQueueStorageError::StorageError)?;
 
         let num_initial_dependent_events = dependent_events.len();
+        if num_initial_dependent_events == 0 {
+            return Ok(());
+        }
 
         let canonicalized_dependent_events = canonicalize_dependent_events(&dependent_events);
 
