@@ -24,7 +24,7 @@ use matrix_sdk_test::{
     JoinedRoomBuilder, SyncResponseBuilder, ALICE,
 };
 use matrix_sdk_ui::timeline::{ReactionStatus, RoomExt as _};
-use ruma::{event_id, events::relation::Annotation, room_id};
+use ruma::{event_id, room_id};
 use serde_json::json;
 use wiremock::{
     matchers::{header, method, path_regex},
@@ -72,6 +72,7 @@ async fn test_abort_before_being_sent() {
 
     assert_let!(Some(VectorDiff::PushBack { value: first }) = stream.next().await);
     let item = first.as_event().unwrap();
+    let unique_id = first.unique_id();
     assert_eq!(item.content().as_message().unwrap().body(), "hello");
 
     assert_let!(Some(VectorDiff::PushFront { value: day_divider }) = stream.next().await);
@@ -98,7 +99,7 @@ async fn test_abort_before_being_sent() {
     mock_redaction(event_id!("$3")).mount(&server).await;
 
     // We add the reaction…
-    timeline.toggle_reaction(&Annotation::new(event_id.to_owned(), "👍".to_owned())).await.unwrap();
+    timeline.toggle_reaction(unique_id, "👍").await.unwrap();
 
     // First toggle (local echo).
     {
@@ -115,7 +116,7 @@ async fn test_abort_before_being_sent() {
     }
 
     // We toggle another reaction at the same time…
-    timeline.toggle_reaction(&Annotation::new(event_id.to_owned(), "🥰".to_owned())).await.unwrap();
+    timeline.toggle_reaction(unique_id, "🥰").await.unwrap();
 
     {
         assert_let!(Some(VectorDiff::Set { index: 1, value: item }) = stream.next().await);
@@ -136,7 +137,7 @@ async fn test_abort_before_being_sent() {
 
     // Then we remove the first one; because it was being sent, it should lead to a
     // redaction event.
-    timeline.toggle_reaction(&Annotation::new(event_id.to_owned(), "👍".to_owned())).await.unwrap();
+    timeline.toggle_reaction(unique_id, "👍").await.unwrap();
 
     {
         assert_let!(Some(VectorDiff::Set { index: 1, value: item }) = stream.next().await);
@@ -153,7 +154,7 @@ async fn test_abort_before_being_sent() {
 
     // But because the first one was being sent, this one won't and the local echo
     // could be discarded.
-    timeline.toggle_reaction(&Annotation::new(event_id.to_owned(), "🥰".to_owned())).await.unwrap();
+    timeline.toggle_reaction(unique_id, "🥰").await.unwrap();
 
     {
         assert_let!(Some(VectorDiff::Set { index: 1, value: item }) = stream.next().await);
@@ -211,6 +212,7 @@ async fn test_redact_failed() {
     server.reset().await;
 
     assert_let!(Some(VectorDiff::PushBack { value: item }) = stream.next().await);
+    let unique_id = item.unique_id();
     let item = item.as_event().unwrap();
     assert_eq!(item.content().as_message().unwrap().body(), "hello");
     assert!(item.reactions().is_empty());
@@ -233,10 +235,7 @@ async fn test_redact_failed() {
         .await;
 
     // We toggle the reaction, which fails with an error.
-    timeline
-        .toggle_reaction(&Annotation::new(event_id.to_owned(), "😆".to_owned()))
-        .await
-        .unwrap_err();
+    timeline.toggle_reaction(unique_id, "😆").await.unwrap_err();
 
     // The local echo is removed (assuming the redaction works)…
     assert_let!(Some(VectorDiff::Set { index: 1, value: item }) = stream.next().await);

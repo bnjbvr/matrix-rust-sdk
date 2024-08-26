@@ -74,7 +74,9 @@ use crate::{
     timeline::{
         day_dividers::DayDividerAdjuster,
         event_handler::LiveTimelineUpdatesAllowed,
+        event_item::EventTimelineItemKind,
         pinned_events_loader::{PinnedEventsLoader, PinnedEventsLoaderError},
+        util::rfind_event_by_uid,
         TimelineEventFilterFn,
     },
     unable_to_decrypt_hook::UtdHookManager,
@@ -419,7 +421,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
 
     pub(super) async fn subscribe(
         &self,
-    ) -> (Vector<Arc<TimelineItem>>, impl Stream<Item = VectorDiff<Arc<TimelineItem>>>) {
+    ) -> (Vector<Arc<TimelineItem>>, impl Stream<Item = VectorDiff<Arc<TimelineItem>>> + Send) {
         trace!("Creating timeline items signal");
         let state = self.state.read().await;
         (state.items.clone(), state.items.subscribe().into_stream())
@@ -451,32 +453,67 @@ impl<P: RoomDataProvider> TimelineInner<P> {
     #[instrument(skip_all)]
     pub(super) async fn toggle_reaction_local(
         &self,
-        annotation: &Annotation,
+        unique_id: &str,
+        key: &str,
     ) -> Result<bool, Error> {
         let mut state = self.state.write().await;
 
         let user_id = self.room_data_provider.own_user_id();
 
-        let Some((item_pos, item)) = rfind_event_by_id(&state.items, &annotation.event_id) else {
+        let Some((item_pos, item)) = rfind_event_by_uid(&state.items, unique_id) else {
             warn!("Timeline item not found, can't add reaction");
             return Err(Error::FailedToToggleReaction);
         };
 
         let prev_status = item
             .reactions()
-            .get(&annotation.key)
+            .get(key)
             .and_then(|group| group.get(user_id))
             .map(|reaction_info| reaction_info.status.clone());
 
         let Some(prev_status) = prev_status else {
-            // Add a reaction through the room data provider.
-            // No need to reflect the effect locally, since the local echo handling will
-            // take care of it.
-            trace!("adding a new reaction");
-            self.room_data_provider
-                .send(ReactionEventContent::from(annotation.clone()).into())
-                .await?;
-            return Ok(true);
+            match &item.inner.kind {
+                EventTimelineItemKind::Local(local) => {
+                    if let Some(send_handle) = local.send_handle.clone() {
+                        if let Some(reaction_handle) = send_handle
+                            .react(key.to_owned())
+                            .await
+                            .map_err(|err| Error::SendQueueError(err.into()))?
+                        {
+                            trace!("adding a reaction to a local echo");
+                            let mut reactions = item.reactions().clone();
+                            reactions.entry(key.to_owned()).or_default().insert(
+                                user_id.to_owned(),
+                                ReactionInfo {
+                                    timestamp: MilliSecondsSinceUnixEpoch::now(),
+                                    status: ReactionStatus::LocalToLocal(Some(reaction_handle)),
+                                },
+                            );
+                            let new_item = item.with_reactions(reactions);
+                            state.items.set(item_pos, new_item);
+                            return Ok(true);
+                        }
+
+                        warn!("couldn't toggle reaction for local echo");
+                        return Ok(false);
+                    }
+
+                    warn!("missing send handle for local echo; is this a test?");
+                    return Ok(false);
+                }
+
+                EventTimelineItemKind::Remote(remote) => {
+                    // Add a reaction through the room data provider.
+                    // No need to reflect the effect locally, since the local echo handling will
+                    // take care of it.
+                    trace!("adding a reaction to a remote echo");
+                    let annotation = Annotation::new(remote.event_id.to_owned(), key.to_owned());
+                    self.room_data_provider
+                        .send(ReactionEventContent::from(annotation).into())
+                        .await?;
+                    return Ok(true);
+                }
+            }
         };
 
         trace!("removing a previous reaction");
@@ -511,7 +548,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
             ReactionStatus::RemoteToRemote(event_id) => {
                 // Assume the redaction will work; we'll re-add the reaction if it didn't.
                 let mut reactions = item.reactions().clone();
-                let reaction_info = reactions.remove_reaction(user_id, &annotation.key);
+                let reaction_info = reactions.remove_reaction(user_id, &key);
 
                 if reaction_info.is_some() {
                     let new_item = item.with_reactions(reactions);
@@ -529,13 +566,11 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                         debug!("sending redact failed, adding the reaction back to the list");
 
                         let mut state = self.state.write().await;
-                        if let Some((item_pos, item)) =
-                            rfind_event_by_id(&state.items, &annotation.event_id)
-                        {
+                        if let Some((item_pos, item)) = rfind_event_by_id(&state.items, &event_id) {
                             // Re-add the reaction to the mapping.
                             let mut reactions = item.reactions().clone();
                             reactions
-                                .entry(annotation.key.to_owned())
+                                .entry(key.to_owned())
                                 .or_default()
                                 .insert(user_id.to_owned(), reaction_info);
                             let new_item = item.with_reactions(reactions);
