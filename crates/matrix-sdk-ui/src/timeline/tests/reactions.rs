@@ -70,7 +70,9 @@ macro_rules! assert_reaction_is_updated {
         let reactions = event.reactions().get(&REACTION_KEY.to_owned()).unwrap();
         let reaction = reactions.get(*ALICE).unwrap();
         match reaction.status {
-            ReactionStatus::LocalToRemote(_) => assert!(!$is_remote_echo),
+            ReactionStatus::LocalToRemote(_) | ReactionStatus::LocalToLocal(_) => {
+                assert!(!$is_remote_echo)
+            }
             ReactionStatus::RemoteToRemote(_) => assert!($is_remote_echo),
         };
         event
