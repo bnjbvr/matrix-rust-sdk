@@ -22,7 +22,7 @@ use ruma::serde::Raw;
 use tokio::sync::broadcast::Sender;
 use tracing::trace;
 
-use crate::event_cache::{Result, caches::room::RoomEventCacheLinkedChunkUpdate};
+use crate::event_cache::{EventCacheError, Result, caches::room::RoomEventCacheLinkedChunkUpdate};
 
 /// Propagate linked chunk updates to the store and to the linked chunk update
 /// observers.
@@ -80,7 +80,7 @@ pub(super) async fn send_updates_to_store(
         store.handle_linked_chunk_updates(cloned_linked_chunk_id.as_ref(), cloned_updates).await?;
         trace!("linked chunk updates applied");
 
-        Result::Ok(())
+        Result::<_, EventCacheError>::Ok(())
     })
     .await
     .expect("joining failed")?;

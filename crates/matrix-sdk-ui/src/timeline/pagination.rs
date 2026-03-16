@@ -16,8 +16,8 @@ use async_rx::StreamExt as _;
 use async_stream::stream;
 use futures_core::Stream;
 use futures_util::{StreamExt as _, pin_mut};
-use matrix_sdk::event_cache::{self, EventCacheError, PaginationStatus};
-use tracing::{instrument, warn};
+use matrix_sdk::event_cache::{self, PaginationStatus};
+use tracing::instrument;
 
 use super::Error;
 use crate::timeline::{
@@ -117,14 +117,7 @@ impl super::Timeline {
                     }
                 }
 
-                Err(EventCacheError::AlreadyBackpaginating) => {
-                    // Treat an already running pagination exceptionally, returning false so that
-                    // the caller retries later.
-                    warn!("Another pagination request is already happening, returning early");
-                    return Ok(false);
-                }
-
-                // Propagate other errors as such.
+                // Propagate errors as such.
                 Err(err) => return Err(err),
             }
         }

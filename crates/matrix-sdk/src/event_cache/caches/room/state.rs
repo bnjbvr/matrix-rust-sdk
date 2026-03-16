@@ -1341,7 +1341,7 @@ impl<'a> RoomEventCacheStateLockWriteGuard<'a> {
             for event in events {
                 store.save_event(&room_id, event).await?;
             }
-            super::Result::Ok(())
+            super::Result::<_, EventCacheError>::Ok(())
         })
         .await
         .expect("joining failed")?;

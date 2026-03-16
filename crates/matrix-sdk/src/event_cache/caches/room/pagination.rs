@@ -26,6 +26,7 @@ use matrix_sdk_base::{
     linked_chunk::{ChunkContent, LinkedChunkId},
 };
 use ruma::api::Direction;
+use tokio::sync::Mutex;
 
 pub use super::super::pagination::PaginationStatus;
 use super::{
@@ -41,7 +42,10 @@ use super::{
     },
     PostProcessingOrigin, RoomEventCacheInner, RoomEventCacheUpdate,
 };
-use crate::room::MessagesOptions;
+use crate::{
+    event_cache::caches::pagination::{SharedPagination, SimplifiedPaginationError},
+    room::MessagesOptions,
+};
 
 /// An API object to run pagination queries on a [`RoomEventCache`].
 ///
@@ -72,7 +76,7 @@ impl RoomPagination {
     pub async fn run_backwards_until(
         &self,
         num_requested_events: u16,
-    ) -> Result<BackPaginationOutcome> {
+    ) -> Result<BackPaginationOutcome, SimplifiedPaginationError> {
         self.0.run_backwards_until(num_requested_events).await
     }
 
@@ -80,7 +84,10 @@ impl RoomPagination {
     ///
     /// This automatically takes care of waiting for a pagination token from
     /// sync, if we haven't done that before.
-    pub async fn run_backwards_once(&self, batch_size: u16) -> Result<BackPaginationOutcome> {
+    pub async fn run_backwards_once(
+        &self,
+        batch_size: u16,
+    ) -> Result<BackPaginationOutcome, SimplifiedPaginationError> {
         self.0.run_backwards_once(batch_size).await
     }
 
@@ -91,6 +98,10 @@ impl RoomPagination {
 }
 
 impl PaginatedCache for Arc<RoomEventCacheInner> {
+    fn current_request(&self) -> &Mutex<Option<SharedPagination>> {
+        &self.current_pagination_request
+    }
+
     fn status(&self) -> &SharedObservable<PaginationStatus> {
         &self.pagination_status
     }

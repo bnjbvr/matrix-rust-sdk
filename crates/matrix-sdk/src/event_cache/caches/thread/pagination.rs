@@ -18,6 +18,7 @@ use eyeball::SharedObservable;
 use eyeball_im::VectorDiff;
 use matrix_sdk_base::event_cache::Event;
 use ruma::{OwnedEventId, api::Direction};
+use tokio::sync::Mutex;
 
 pub use super::super::pagination::PaginationStatus;
 use super::super::{
@@ -29,16 +30,21 @@ use super::super::{
     },
     room::RoomEventCacheInner,
 };
-use crate::room::{IncludeRelations, RelationsOptions};
+use crate::{
+    event_cache::caches::pagination::{SharedPagination, SimplifiedPaginationError},
+    room::{IncludeRelations, RelationsOptions},
+};
 
 /// Intermediate type because the `ThreadEventCache` state is currently owned by
 /// `RoomEventCache`.
+#[derive(Clone)]
 struct ThreadEventCacheWrapper {
     cache: Arc<RoomEventCacheInner>,
     thread_id: OwnedEventId,
     // Threads do not support pagination status for the moment but we need one, so let's use a
     // dummy one for now.
     dummy_pagination_status: SharedObservable<PaginationStatus>,
+    current_pagination_request: Arc<Mutex<Option<SharedPagination>>>,
 }
 
 /// An API object to run pagination queries on a `ThreadEventCache`.
@@ -54,6 +60,7 @@ impl ThreadPagination {
             dummy_pagination_status: SharedObservable::new(PaginationStatus::Idle {
                 hit_timeline_start: false,
             }),
+            current_pagination_request: Arc::new(Mutex::new(None)),
         }))
     }
 
@@ -70,7 +77,7 @@ impl ThreadPagination {
     pub async fn run_backwards_until(
         &self,
         num_requested_events: u16,
-    ) -> Result<BackPaginationOutcome> {
+    ) -> Result<BackPaginationOutcome, SimplifiedPaginationError> {
         self.0.run_backwards_until(num_requested_events).await
     }
 
@@ -78,12 +85,19 @@ impl ThreadPagination {
     ///
     /// This automatically takes care of waiting for a pagination token from
     /// sync, if we haven't done that before.
-    pub async fn run_backwards_once(&self, batch_size: u16) -> Result<BackPaginationOutcome> {
+    pub async fn run_backwards_once(
+        &self,
+        batch_size: u16,
+    ) -> Result<BackPaginationOutcome, SimplifiedPaginationError> {
         self.0.run_backwards_once(batch_size).await
     }
 }
 
 impl PaginatedCache for ThreadEventCacheWrapper {
+    fn current_request(&self) -> &Mutex<Option<SharedPagination>> {
+        &*self.current_pagination_request
+    }
+
     fn status(&self) -> &SharedObservable<PaginationStatus> {
         &self.dummy_pagination_status
     }

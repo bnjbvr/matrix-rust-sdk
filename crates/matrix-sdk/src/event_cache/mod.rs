@@ -144,7 +144,7 @@ pub enum EventCacheError {
 }
 
 /// A result using the [`EventCacheError`].
-pub type Result<T> = std::result::Result<T, EventCacheError>;
+pub type Result<T, E = EventCacheError> = std::result::Result<T, E>;
 
 /// Hold handles to the tasks spawn by a [`EventCache`].
 pub struct EventCacheDropHandles {
